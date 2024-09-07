@@ -21,7 +21,7 @@ pkgs <- c("cowplot","parallel","doSNOW","tictoc","ggsci","here","readr", "ggplot
 vapply(pkgs, library, logical(1), character.only = TRUE, logical.return = TRUE)
 
 # Load in negexp fits on real time series
-detnut_params <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))|>
+detnut_params <- readRDS(here("data/derived_data/DetNut_litter_fits.rds"))|>
   mutate(negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
          weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)))|>
   select(cohort_id, negexp_k,weibull_alpha)
@@ -177,7 +177,7 @@ ggplot()+
   theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
         legend.title = element_text(size = 14), legend.text = element_text(size = 14), legend.position = c(0.825,0.65))
 
-  ggsave(leaching.p, filename = "leaching_simulation.jpeg", path = here("analysis/paper/figures"),
+  ggsave(leaching.p, filename = "leaching_simulation.jpeg", path = here("paper/figures"),
        height = 6, width = 9, units = "in")
   
   
@@ -201,7 +201,7 @@ ggplot()+
   theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
         legend.title = element_text(size = 14), legend.text = element_text(size = 14), strip.text = element_text(size = 16))
 simcurves.p
-  ggsave(simcurves.p, filename = "simulated_decomp_curves.jpeg", path = here("analysis/paper/figures"),
+  ggsave(simcurves.p, filename = "simulated_decomp_curves.jpeg", path = here("paper/figures"),
        height = 6, width = 9, units = "in")
 ```
 k_1 really doesn't influence these curves much at all. Fair to just set k_1 at 0.6 and do leaching scenarios with proportion leachable differences
@@ -218,9 +218,9 @@ nested_outputs <- outputs_df_nested|>
   mutate(output = map(output, ~.x|>mutate(mass_prop = M/first(M),
                                           mass_prop_nonleachable = M_n/first(M_n))))
 
-if(file.exists(here("analysis/data/derived_data/toymodel_fits.rds"))){
+if(file.exists(here("data/derived_data/toymodel_fits.rds"))){
   
-  sim_output_fits <- readRDS(here("analysis/data/derived_data/toymodel_fits.rds"))
+  sim_output_fits <- readRDS(here("data/derived_data/toymodel_fits.rds"))
   
   }else{
 
@@ -351,7 +351,7 @@ sim_output_fits <- foreach(i = 1:nrow(nested_outputs), .combine = 'rbind', .opti
         }     
 stopCluster(cl)
 
-saveRDS(sim_output_fits, file = here("analysis/data/derived_data/toymodel_fits.rds")) 
+saveRDS(sim_output_fits, file = here("data/derived_data/toymodel_fits.rds")) 
 }
 
 # Loops took <5 minutes with 16 cores on 999 iters
@@ -593,7 +593,7 @@ logdiff_grid <- ggdraw(plot_grid(plot_grid(klogdiff.p+theme(legend.position = "n
           plot_grid(get_legend(klogdiff.p),ncol = 1),
           rel_widths = c(1,0.2)))
 
-ggsave(logdiff_grid, filename = "k_logdiff_sims.jpeg", path = here("analysis/paper/figures"),
+ggsave(logdiff_grid, filename = "k_logdiff_sims.jpeg", path = here("paper/figures"),
        height = 9, width = 12, units = "in")
 
 diff_grid <- ggdraw(plot_grid(plot_grid(kdiff.p+theme(legend.position = "none"),
@@ -602,7 +602,7 @@ diff_grid <- ggdraw(plot_grid(plot_grid(kdiff.p+theme(legend.position = "none"),
           plot_grid(get_legend(kdiff.p),ncol = 1),
           rel_widths = c(1,0.2)))
 
-ggsave(diff_grid, filename = "Fig4_diff_sims.jpeg", path = here("analysis/paper/figures"),
+ggsave(diff_grid, filename = "Fig4_diff_sims.jpeg", path = here("paper/figures"),
        height = 9, width = 12, units = "in")
 
 ```

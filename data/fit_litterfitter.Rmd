@@ -22,16 +22,16 @@ library(here)
 Data series were checked and  tidied in "tidy_detrital_nutrients_data.Rmd"
 ```{r}
 
-litter_df <- read_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))
+litter_df <- read_csv(here("data/derived_data/tidied_detrital_nutrients_data.csv"))
 ```
 
 # Fit litter series
 
 ```{r}
 
-if(file.exists(here("analysis/data/derived_data/DetNut_litter_fits.rds"))){
+if(file.exists(here("data/derived_data/DetNut_litter_fits.rds"))){
   
-  litter_fits <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))
+  litter_fits <- readRDS(here("data/derived_data/DetNut_litter_fits.rds"))
 
 }else{
 
@@ -129,7 +129,7 @@ litter_fits <- foreach(i = 1:nrow(nested_data), .combine = 'rbind', .options.sno
 stopCluster(cl)
 
 # save to file
-saveRDS(litter_fits, file = here("analysis/data/derived_data/DetNut_litter_fits.rds")) 
+saveRDS(litter_fits, file = here("data/derived_data/DetNut_litter_fits.rds")) 
 
 # Loops took about 50 minutes with 16 cores
 }

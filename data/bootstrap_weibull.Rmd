@@ -11,10 +11,10 @@ library(here)
 library(litterfitter)
 library(foreach); library(doSNOW); library(parallel)
 
-litter_df <- read_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))|> # tidied litter time series
+litter_df <- read_csv(here("data/derived_data/tidied_detrital_nutrients_data.csv"))|> # tidied litter time series
  mutate(mass_prop = Mass_per_remaining/100)
 
-litter_fits <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))
+litter_fits <- readRDS(here("data/derived_data/DetNut_litter_fits.rds"))
 ```
 
 
@@ -80,7 +80,7 @@ weibull_alpha_bs2 <- weibull_alpha_bs|>
   mutate(weibulla_overlap_1 = between(1, weibull_alpha_025,weibull_alpha_975))
 
 # save to file
-weibull_alpha_bs2|>write_csv(file = here("analysis/data/derived_data/DetNut_weibullalpha_bootstraps.csv")) 
+weibull_alpha_bs2|>write_csv(file = here("data/derived_data/DetNut_weibullalpha_bootstraps.csv")) 
 
 ```
 

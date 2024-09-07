@@ -27,7 +27,7 @@ entityId <- entity_names$entityId
 edi_df <- read_data_entity(packageId = packageId, entityId = entityId)|>read_csv()
 
 #write data to file
-edi_df|>write_csv(here("analysis/data/raw_data/DetNutSynth_Database_9May2023.1.csv")) # this matches the name if you were to point-and-click download from EDI
+edi_df|>write_csv(here("data/raw_data/DetNutSynth_Database_9May2023.1.csv")) # this matches the name if you were to point-and-click download from EDI
 ```
 
 ```{r Tidy data}
@@ -63,11 +63,11 @@ det_lm <- det_df|>
   summarize(glance(lm_fit))|>
   filter(r.squared >=0.95) 
 
-det_lm|>write_csv(here("analysis/data/derived_data/check_massloss.csv")) # write to file for verification
+det_lm|>write_csv(here("data/derived_data/check_massloss.csv")) # write to file for verification
 
 # read in file with new column  "Actual Mass Loss data in paper?" filled in 
 
-ml_checks <- read_csv(here("analysis/data/derived_data/check_massloss_annotated.csv"))
+ml_checks <- read_csv(here("data/derived_data/check_massloss_annotated.csv"))
 
 
 ```
@@ -89,5 +89,5 @@ det_df2 <- det_df|>left_join(
 # Write to derived_data folder
 ```{r}
 
-det_df2|>write_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))
+det_df2|>write_csv(here("data/derived_data/tidied_detrital_nutrients_data.csv"))
 ```

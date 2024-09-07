@@ -1,4 +1,4 @@
-This is the repository for the paper *Revisiting k: Time-varying stream litter breakdown rates*
+This is the repository for the manuscript *Revisiting k: Time-varying stream litter breakdown rates*
 
 
 ![mass loss ontogenies](https://raw.githubusercontent.com/robbinscalebj/revisiting-k/master/paper/figures/Fig1_example_plots.jpeg)
