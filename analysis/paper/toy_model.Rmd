@@ -1,0 +1,632 @@
+---
+title: "Toy Model"
+author: "W. J. Matthaeus"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    self_contained: yes
+    mode: selfcontained
+  revealjs::revealjs_presentation:
+    theme: sky
+    highlight: pygments
+    center: true
+---
+Based on the "toy model" from A. Lecerf 2021 section 19.5
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pkgs <- c("cowplot","parallel","doSNOW","tictoc","ggsci","here","readr", "ggplot2", "dplyr", "readxl", 
+          "tibble", "tidyr", "stringr", "RColorBrewer",
+          "deSolve", "purrr", "forcats")
+vapply(pkgs, library, logical(1), character.only = TRUE, logical.return = TRUE)
+
+# Load in negexp fits on real time series
+detnut_params <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))|>
+  mutate(negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)))|>
+  select(cohort_id, negexp_k,weibull_alpha)
+         
+```
+
+
+
+# Simualate decomp
+## ODEs
+```{r functions}
+
+# actual model function
+toy<-function(t, state, parameters) { 
+  with(
+    as.list(c(state, parameters)),
+    {
+     # rate of change 
+    dM_l <- -k_1*M_l
+    M <- M_l + M_n
+    dM_n <- -(4*b*B_max)/(M_0^2) * ((M_0 - M)^(1+c)) * M
+    # return the rate of change 
+    list(c(dM_l, dM_n)) 
+    }
+    
+    ) 
+}
+
+# function to loop across parameter sets
+wiggle_ode <- function(initial_mass, proportion_leachable, k_1, b, c, B_max){
+
+  #define variables
+  proportion_leachable = proportion_leachable
+  initial_mass = initial_mass
+  
+  temp_params <- c(M_0 = initial_mass,
+                proportion_leachable = proportion_leachable,
+                k_1 = k_1,
+                B_max = B_max,
+                b = b,
+                c = c
+              )
+  
+    state <- c(M_l = initial_mass*proportion_leachable,
+          M_n = initial_mass*(1-proportion_leachable))
+
+
+# run ODEs
+  temp.out <- ode(y = state, times = times, func = toy, parms = temp_params, method = "rk4")
+  
+#tidy output  
+  temp.out.df <- as.data.frame(temp.out)|>
+    mutate(M = M_l+M_n)|> 
+    filter(time == round(time)) # reduce data points to daily rather than 10ths of a day 
+#WJM 1 Aug 24: also can just run a coarser time series. might change the results a little, but it will be faster
+}
+
+```
+
+```{r define parameter sets}
+
+
+times <- seq(0, 1000, by = .1)
+
+
+params_table <- expand_grid(
+  initial_mass = 7.2, # NOTE: for some reason this breaks with a few integer values (e.g., 6) for initial_mass, at least when c != 0 or 1
+  M_0 = initial_mass,
+  proportion_leachable = c(0.05,0.15,0.25),
+  k_1 = c(0.6),
+  B_max = c(0.2), 
+  b = seq(0.1,0.7, length.out = 5),# must be positive
+  #b = seq(0.05,0.45, by = 0.1), #old, wasn't covering high range of 
+  c = c(-1,0,0.5)) #lower limit at -1, 1 produces lagging curves that seem implausible - Weibull alphas fairly high
+
+
+```
+
+```{r run ODEs}
+
+
+outputs_df_nested <- params_table|>
+  rowwise()|>
+  mutate(output = pmap(list(initial_mass,proportion_leachable, k_1, b, c, B_max), 
+                       ~wiggle_ode(initial_mass = ..1, proportion_leachable = ..2, k_1 = ..3, 
+                                   b =..4, c = ..5, B_max = ..6)))|> # tack results onto parameter table
+  ungroup()|>
+  mutate(param_set_id = row_number())
+
+outputs_df <- outputs_df_nested|>
+  unnest(output)|>
+  mutate(across(-c(M, M_l, M_n, time), as_factor))|>
+  group_by(param_set_id)|>
+  mutate(mass_prop = M/first(M),
+         mass_prop = round(mass_prop, digits = 2))|>relocate(mass_prop,M) #helpful for some plotting
+
+blah <- outputs_df|>
+  filter(M>=0)|>
+  #filter(mass_prop)
+  arrange(desc(M))|>
+  slice_tail(n = 1)
+```
+
+## Plots
+```{r plot simulations}
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = M, color = proportion_leachable, linetype = b))+
+  facet_wrap(.~c)
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = log(M), color = proportion_leachable, linetype = b))+
+  facet_wrap(.~c)
+
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = M, group = param_set_id, color = as_factor(k_1)))
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = log(M), group = param_set_id, color = as_factor(k_1)))
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = M, group = param_set_id, color = as_factor(c), linetype = as_factor(proportion_leachable)))+
+  facet_wrap(.~as_factor(b))
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = log(M), group = param_set_id, color = as_factor(c), linetype = as_factor(proportion_leachable)))+
+  facet_wrap(.~as_factor(b))
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = M_n, group = param_set_id, color = as_factor(c), linetype = as_factor(proportion_leachable)))+
+  facet_wrap(.~as_factor(b))+
+  ggtitle("non-leachable mass fraction only")
+
+ggplot(outputs_df|>filter(mass_prop>0.15))+
+  geom_line(aes(x = time, y = log(M_n), group = param_set_id, color = as_factor(c), linetype = as_factor(proportion_leachable)))+
+  facet_wrap(.~as_factor(b))+
+  ggtitle("non-leachable mass fraction only")
+
+leaching.p <- outputs_df|>
+  filter(mass_prop>0.15, time <10)|>
+  mutate(proportion_leachable = fct_relevel(as_factor(proportion_leachable),"0.25","0.15","0.05"))|>
+  group_by(param_set_id)|>
+  mutate(M_l_prop = M_l/first(M_l))|> #plotting this verifies proportionally equivalent (k)
+ggplot()+
+  geom_line(aes(x = time, y = M_l, linetype = proportion_leachable, color = proportion_leachable), linewidth = 1.25)+
+  ylab("Leachable mass")+
+  xlab("Time (d)")+
+  scale_x_continuous(breaks = c(0,2,4,6,8))+
+  scale_y_continuous(breaks = c(0,0.5,1,1.5,2), limits = c(0,2))+
+  scale_color_jco()+
+  guides(linetype = guide_legend("Leachable Proportion"), color = guide_legend("Leachable Proportion"))+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 14), legend.position = c(0.825,0.65))
+
+  ggsave(leaching.p, filename = "leaching_simulation.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 9, units = "in")
+  
+  
+simcurves.p <- outputs_df|>ungroup()|>
+  filter(mass_prop>0.15)|>
+  mutate(proportion_leachable = fct_relevel(as_factor(proportion_leachable),"0.25","0.15","0.05"),
+         c = str_c("c = ", c),
+         c = fct_relevel(as_factor(c), "c = -1","c = -0.5", "c = 0", "c = 0.5"))|>
+  group_by(param_set_id)|>
+  mutate(M_l_prop = M_l/first(M_l))|> #plotting this verifies proportionally equivalent (k)
+ggplot()+
+  geom_line(aes(x = time, y = M, linetype = proportion_leachable, color = b))+
+  facet_wrap(.~c, ncol =2)+
+  ylab("Litter Mass (g)")+
+  xlab("Time (d)")+
+  scale_y_continuous(breaks = c(1, 3,5,7.2), limits = c(1,7.2))+
+  scale_x_continuous(limits = c(0,400))+
+  scale_color_jco()+
+  guides(color = guide_legend("b"), linetype = guide_legend("Leachable Proportion"))+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 14), strip.text = element_text(size = 16))
+simcurves.p
+  ggsave(simcurves.p, filename = "simulated_decomp_curves.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 9, units = "in")
+```
+k_1 really doesn't influence these curves much at all. Fair to just set k_1 at 0.6 and do leaching scenarios with proportion leachable differences
+
+Interesting that the model  can't ellicit leading dynamics for the non-leachable fraction, where the proportional mass loss (i.e., log(M) ~ time) decreases through time. So, by the model definition, leading dynamics over the whole decomp curve only occur because of leaching. That makes sense with the equation because the per capita decomposer effect (beta) is monotonic. I suppose we could adjust the equation for beta to be something like the probability distribution function for a gamma or weibull distro...
+
+# Analysis
+How do negative exponential fits imply biological rates? What is the misrepresentation of k vs a 'correct' biological rate (instantaneous k)? 
+```{r calculate weibull and negexp fits on simulated data}
+#set up data
+nested_outputs <- outputs_df_nested|>
+  #slice_head(n = 2)|> # TESTING
+  group_by(param_set_id)|>
+  mutate(output = map(output, ~.x|>mutate(mass_prop = M/first(M),
+                                          mass_prop_nonleachable = M_n/first(M_n))))
+
+if(file.exists(here("analysis/data/derived_data/toymodel_fits.rds"))){
+  
+  sim_output_fits <- readRDS(here("analysis/data/derived_data/toymodel_fits.rds"))
+  
+  }else{
+
+
+# Definitions for use in parallel loops
+n_param_set <- nrow(nested_outputs)
+cohort_names <- nested_outputs|>pull(param_set_id)
+n_iters <- 999
+
+pb <- txtProgressBar(max = n_param_set, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+# Set parallel processing
+cl <- makePSOCKcluster(16) 
+registerDoSNOW(cl)
+
+
+# Loop
+sim_output_fits <- foreach(i = 1:nrow(nested_outputs), .combine = 'rbind', .options.snow = opts, 
+        .packages = c("tidyverse", "litterfitter", "future"), .inorder = TRUE#, .final = function(x) setNames(x, cohort_names)
+        ) %dopar% {
+    
+                
+# filter to cohort data and unnest into data frame with full simulation data (all trimmed to end at 0.15 mass proportion, so no super long tails at zero which almost never happens experimentally)
+          
+      df <- nested_outputs|>filter(param_set_id == i)|>unnest()
+
+# Stop sampling at 0.25 mass prop      
+      df_m25 <- df|>filter(mass_prop>=0.25)|> # slightly truncated decomp experiment
+        mutate(mass_prop_rounded = round(mass_prop, digits = 2), 
+               mass_prop_match = ifelse(mass_prop_rounded %in% round(seq(from = 1-first(proportion_leachable), to = last(mass_prop), length.out = 7), digits = 2),
+                                        "yes", "no"))|>
+        #filtering to simulate sampling from the time series - sampling starts assuming the first sample timing is just after the majority of the leachate gone
+        filter(mass_prop_match == "yes")|>group_by(mass_prop_rounded)|>
+        slice_sample(n = 1)
+
+# Stop sampling at 0.45 mass prop 
+      df_m45 <- df|>filter(mass_prop>=0.45)|> # mid decomp end
+      mutate(mass_prop_rounded = round(mass_prop, digits = 2), 
+               mass_prop_match = ifelse(mass_prop_rounded %in% round(seq(from = 1-first(proportion_leachable), to = last(mass_prop), length.out = 7), digits = 2),
+                                        "yes", "no"))|>
+        #filtering to simulate sampling from the time series - sampling starts assuming the first sample timing is just after the majority of the leachate gone
+        filter(mass_prop_match == "yes")|>group_by(mass_prop_rounded)|>
+        slice_sample(n = 1)
+      
+
+# Stop sampling at 0.6 mass prop      
+      df_m60 <- df|>filter(mass_prop>=0.60)|> # short decomposition end
+      mutate(mass_prop_rounded = round(mass_prop, digits = 2), 
+               mass_prop_match = ifelse(mass_prop_rounded %in% round(seq(from = 1-first(proportion_leachable), to = last(mass_prop), length.out = 7), digits = 2),
+                                        "yes", "no"))|>
+        #filtering to simulate sampling from the time series - sampling starts assuming the first sample timing is just after the majority of the leachate gone
+        filter(mass_prop_match == "yes")|>group_by(mass_prop_rounded)|>
+        slice_sample(n = 1)
+        
+      
+ 
+# Fit simulated data sets and components to models
+      
+          #negative exponential fit
+          negexp_fit <- fit_litter(time = df$time,  
+                                              mass.remaining = df$mass_prop,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters) 
+          
+           #scenario assuming measurement stopped at 0.25*M0
+           negexp_fit_m25 <- fit_litter(time = df_m25$time,  
+                                              mass.remaining = df_m25$mass_prop,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters) 
+           
+           #scenario assuming measurement stopped at 0.45*M0
+            negexp_fit_m45 <- fit_litter(time = df_m45$time,  
+                                              mass.remaining = df_m45$mass_prop,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters) 
+            
+             #scenario assuming measurement stopped at 0.60*M0
+             negexp_fit_m60 <- fit_litter(time = df_m60$time,  
+                                              mass.remaining = df_m60$mass_prop,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters) 
+          
+            negexp_fit_nonleachable <- fit_litter(time = df$time,  
+                                              mass.remaining = df$mass_prop_nonleachable,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters) 
+            
+          
+          #weibull fit
+          weibull_fit <- fit_litter(time = df$time, 
+                                              mass.remaining = df$mass_prop,
+                                              lower = c(0.1,0.001),#beta, then alpha 
+                                              upper = c(25000,100),#beta, then alpha 
+                                              model = "weibull",
+                                              iters = n_iters)
+          
+          weibull_fit_nonleachable <- fit_litter(time = df$time, 
+                                              mass.remaining = df$mass_prop_nonleachable,
+                                              lower = c(0.1,0.001),#beta, then alpha 
+                                              upper = c(25000,100),#beta, then alpha 
+                                              model = "weibull",
+                                              iters = n_iters)
+        
+          
+            # Package up results for export
+            tibble(param_set_id = i,
+                   negexp_fit = list(negexp_fit),
+                   negexp_fit_m25 = list(negexp_fit_m25),
+                   negexp_fit_m45 = list(negexp_fit_m45),
+                   negexp_fit_m60 = list(negexp_fit_m60),
+                   negexp_fit_nonleachable = list(negexp_fit_nonleachable),
+                    weibull_fit = list(weibull_fit),
+                   weibull_fit_nonleachable = list(weibull_fit_nonleachable))
+            
+   
+        }     
+stopCluster(cl)
+
+saveRDS(sim_output_fits, file = here("analysis/data/derived_data/toymodel_fits.rds")) 
+}
+
+# Loops took <5 minutes with 16 cores on 999 iters
+ 
+```
+
+
+```{r}
+
+tidy_outputs <- nested_outputs|>
+  left_join(sim_output_fits)|>
+  mutate(negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
+         negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
+         negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
+  )|>
+  mutate(negexp_k_m25 = map_dbl(negexp_fit_m25, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc_m25 = map_dbl(negexp_fit_m25, ~pluck(., "fitAICc")),
+         negexp_logLik_m25 = map_dbl(negexp_fit_m25, ~pluck(., "logLik")),
+         negexp_BIC_m25 = map_dbl(negexp_fit_m25, ~pluck(., "fitBIC")),
+         negexp_pred_m25 = map(negexp_fit_m25, ~pluck(., "predicted"))
+  )|>
+  mutate(negexp_k_m45 = map_dbl(negexp_fit_m45, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc_m45 = map_dbl(negexp_fit_m45, ~pluck(., "fitAICc")),
+         negexp_logLik_m45 = map_dbl(negexp_fit_m45, ~pluck(., "logLik")),
+         negexp_BIC_m45 = map_dbl(negexp_fit_m45, ~pluck(., "fitBIC")),
+         negexp_pred_m45 = map(negexp_fit_m45, ~pluck(., "predicted"))
+  )|>
+  mutate(negexp_k_m60 = map_dbl(negexp_fit_m60, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc_m60 = map_dbl(negexp_fit_m60, ~pluck(., "fitAICc")),
+         negexp_logLik_m60 = map_dbl(negexp_fit_m60, ~pluck(., "logLik")),
+         negexp_BIC_m60 = map_dbl(negexp_fit_m60, ~pluck(., "fitBIC")),
+         negexp_pred_m60 = map(negexp_fit_m60, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
+         weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
+         weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(negexp_k_nonleachable = map_dbl(negexp_fit_nonleachable, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc_nonleachable = map_dbl(negexp_fit_nonleachable, ~pluck(., "fitAICc")),
+         negexp_logLik_nonleachable = map_dbl(negexp_fit_nonleachable, ~pluck(., "logLik")),
+         negexp_BIC_nonleachable = map_dbl(negexp_fit_nonleachable, ~pluck(., "fitBIC")),
+         negexp_pred_nonleachable = map(negexp_fit_nonleachable, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_beta_nonleachable = map_dbl(weibull_fit_nonleachable, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha_nonleachable = map_dbl(weibull_fit_nonleachable, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc_nonleachable = map_dbl(weibull_fit_nonleachable, ~pluck(., "fitAICc")),
+         weibull_logLik_nonleachable = map_dbl(weibull_fit_nonleachable, ~pluck(., "logLik")),
+         weibull_BIC_nonleachable = map_dbl(weibull_fit_nonleachable, ~pluck(., "fitBIC")),
+         weibull_pred_nonleachable = map(weibull_fit_nonleachable, ~pluck(., "predicted"))
+         )|>
+  select(-contains("fit"), -output, -contains("_pred"))
+
+
+```
+
+
+
+```{r}
+tidy_outputs2 <- tidy_outputs|>
+  #filter(negexp_k > 0.002)|> # remove some oddly slow ones - keeps close to range in empirical DetNut data, but also published in Follstad-Shah 2017
+  mutate(m15_logdiffnl = log(negexp_k)-log(negexp_k_nonleachable),
+         m25_logdiffnl = log(negexp_k_m25)-log(negexp_k_nonleachable),
+         m45_logdiffnl = log(negexp_k_m45)-log(negexp_k_nonleachable),
+         m60_logdiffnl = log(negexp_k_m60)-log(negexp_k_nonleachable),
+         m15_diffnl = negexp_k-negexp_k_nonleachable,
+         m25_diffnl = negexp_k_m25-negexp_k_nonleachable,
+         m45_diffnl = negexp_k_m45-negexp_k_nonleachable,
+         m60_diffnl = negexp_k_m60-negexp_k_nonleachable,
+         m25_logdiff = log(negexp_k_m25)-log(negexp_k),
+         m45_logdiff = log(negexp_k_m45)-log(negexp_k),
+         m60_logdiff = log(negexp_k_m60)-log(negexp_k),
+         m25_diff = negexp_k_m25-negexp_k,
+         m45_diff = negexp_k_m45-negexp_k,
+         m60_diff = negexp_k_m60-negexp_k,
+         m25_hldiff = 0.693/negexp_k_m25-0.693/negexp_k,
+         m45_hldiff = 0.693/negexp_k_m45-0.693/negexp_k,
+         m60_hldiff = 0.693/negexp_k_m60-0.693/negexp_k)|>
+  mutate(proportion_leachable = as_factor(proportion_leachable*100),
+         proportion_leachable = fct_relabel(proportion_leachable, ~str_c(.x, " % Leachable")))
+
+
+k_diffs_nl <- tidy_outputs2|>
+  pivot_longer(cols = c(m15_diffnl,m25_diffnl,m45_diffnl,m60_diffnl), values_to = "k_diff", names_to = "terminal_prop_mass")|>
+  relocate(k_diff, terminal_prop_mass)|>
+  mutate(terminal_prop_mass = as.numeric(str_remove_all(terminal_prop_mass, "[^0-9]"))/100,
+         terminal_prop_mass2 = as_factor(terminal_prop_mass),
+         terminal_prop_mass= fct_reorder(terminal_prop_mass2, terminal_prop_mass,.desc = TRUE),
+         c = as_factor(c))|>
+  select(-terminal_prop_mass2)
+
+k_logdiffs_nl <- tidy_outputs2|>
+  pivot_longer(cols = c(m15_logdiffnl, m25_logdiffnl,m45_logdiffnl,m60_logdiffnl), values_to = "k_diff_ln", names_to = "terminal_prop_mass")|>
+  relocate(k_diff_ln, terminal_prop_mass)|>
+  mutate(terminal_prop_mass = as.numeric(str_remove_all(terminal_prop_mass, "[^0-9]"))/100,
+         terminal_prop_mass2 = as_factor(terminal_prop_mass),
+         terminal_prop_mass= fct_reorder(terminal_prop_mass2, terminal_prop_mass,.desc = TRUE),
+         c = as_factor(c))|>
+  select(-terminal_prop_mass2)
+
+k_diffs <- tidy_outputs2|>
+  pivot_longer(cols = c(m25_diff,m45_diff,m60_diff), values_to = "k_diff", names_to = "terminal_prop_mass")|>
+  relocate(k_diff, terminal_prop_mass)|>
+  mutate(terminal_prop_mass = as.numeric(str_remove_all(terminal_prop_mass, "[^0-9]"))/100,
+         terminal_prop_mass2 = as_factor(terminal_prop_mass),
+         terminal_prop_mass= fct_reorder(terminal_prop_mass2, terminal_prop_mass,.desc = TRUE),
+         c = as_factor(c))|>
+  select(-terminal_prop_mass2)
+
+hl_diffs <- tidy_outputs2|>
+  pivot_longer(cols = c(m25_hldiff,m45_hldiff,m60_hldiff), values_to = "half.life_diff", names_to = "terminal_prop_mass")|>
+  relocate(half.life_diff, terminal_prop_mass)|>
+  mutate(terminal_prop_mass = as.numeric(str_remove_all(terminal_prop_mass, "[^0-9]"))/100,
+         terminal_prop_mass2 = as_factor(terminal_prop_mass),
+         terminal_prop_mass= fct_reorder(terminal_prop_mass2, terminal_prop_mass,.desc = TRUE),
+         c = as_factor(c))|>
+  select(-terminal_prop_mass2)
+
+k_logdiffs <- tidy_outputs2|>
+  pivot_longer(cols = c(m25_logdiff,m45_logdiff,m60_logdiff), values_to = "k_diff_ln", names_to = "terminal_prop_mass")|>
+  relocate(k_diff_ln, terminal_prop_mass)|>
+  mutate(terminal_prop_mass = as.numeric(str_remove_all(terminal_prop_mass, "[^0-9]"))/100,
+         terminal_prop_mass2 = as_factor(terminal_prop_mass),
+         terminal_prop_mass= fct_reorder(terminal_prop_mass2, terminal_prop_mass,.desc = TRUE),
+         c = as_factor(c))|>
+  select(-terminal_prop_mass2)
+
+
+range(tidy_outputs2$negexp_k)
+range(detnut_params$negexp_k)
+
+range(tidy_outputs2$weibull_alpha)
+range(detnut_params$weibull_alpha)
+
+k_for_plotting <- tidy_outputs2|>ungroup()|>select(weibull_alpha,negexp_k)|>mutate(type = "simulated")|>
+  bind_rows(detnut_params|>select(-cohort_id)|>mutate(type = "empirical"))
+
+ggplot(k_for_plotting)+
+  geom_density(aes(x = negexp_k, color = type))
+
+ggplot(k_for_plotting)+
+  geom_histogram(aes(x = negexp_k, color = type))+
+  facet_wrap(.~type)
+
+ggplot(k_for_plotting|>filter(weibull_alpha <30))+
+  geom_density(aes(x = weibull_alpha, color = type))
+
+ggplot(k_for_plotting|>filter(weibull_alpha <30))+
+  geom_histogram(aes(x = weibull_alpha, color = type))+
+  facet_wrap(.~type)
+```
+
+
+```{r difference plots}
+
+
+klogdiff.p<-k_logdiffs|>
+  ggplot()+
+  geom_point(aes(x = terminal_prop_mass, y = k_diff_ln, color = c, size = b), alpha = 0.5, position = position_dodge(width = 0.75))+
+  scale_size_continuous(range = c(3,6))+
+  scale_y_continuous(limits = c(-1,1.25))+
+  scale_color_jco(guide = guide_legend(override.aes = list(size = 4)))+
+  facet_wrap(.~proportion_leachable)+
+  xlab("Mass proportion at terminal measurement")+
+  ylab(expression("log(k)"[trunc] - "log(k)"[simulated]))+
+  theme_bw()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 26, face = "bold"), legend.text = element_text(size = 25), strip.text = element_text(size = 18))
+
+klogdiff_nl.p<-k_logdiffs_nl|>
+  ggplot()+
+  geom_point(aes(x = terminal_prop_mass, y = k_diff_ln, color = c, size = b), alpha = 0.5, position = position_dodge(width = 0.75))+
+  scale_size_continuous(range = c(3,6))+
+  scale_y_continuous(limits = c(-1,1.25))+
+  scale_color_jco(guide = guide_legend(override.aes = list(size = 4)))+
+  facet_wrap(.~proportion_leachable)+
+  xlab("Mass proportion at terminal measurement")+
+  ylab(expression("log(k)"[trunc] - "log(k)"[simulated-nonleachable]))+
+  theme_bw()+
+ theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 18, face = "bold"), legend.text = element_text(size = 25), strip.text = element_text(size = 18))
+
+
+kdiff.p<-k_diffs|>
+  ggplot()+
+  geom_point(aes(x = terminal_prop_mass, y = k_diff, color = c, size = b), alpha = 0.5, position = position_dodge(width = 0.75))+
+  scale_size_continuous(range = c(3,6))+
+  scale_y_continuous(limits = c(-0.025,0.025))+
+  scale_color_jco(guide = guide_legend(override.aes = list(size = 4)))+
+  facet_wrap(.~proportion_leachable)+
+  xlab("Mass proportion at terminal measurement")+
+  ylab(expression("k"[trunc] - "k"[simulated]))+
+  theme_bw()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 26, face = "bold"), legend.text = element_text(size = 25), strip.text = element_text(size = 18))
+
+kdiff_nl.p<-k_diffs_nl|>
+  ggplot()+
+  geom_point(aes(x = terminal_prop_mass, y = k_diff, color = c, size = b), alpha = 0.5, position = position_dodge(width = 0.75))+
+  scale_size_continuous(range = c(1.5,5))+
+  scale_y_continuous(limits = c(-0.025,0.025))+
+  scale_color_jco()+
+  facet_wrap(.~proportion_leachable)+
+  xlab("Mass proportion at terminal measurement")+
+  ylab(expression("k"[trunc] - "k"[simulated-nonleachable]))+
+  theme_bw()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 18), legend.text = element_text(size = 14), strip.text = element_text(size = 18))
+
+#half-life diffs plot
+hldiff.p<-hl_diffs|>
+  ggplot()+
+  geom_point(aes(x = terminal_prop_mass, y = half.life_diff, color = c, size = b), alpha = 0.5, position = position_dodge(width = 0.75))+
+  scale_size_continuous(range = c(3,6))+
+  #scale_y_continuous(limits = c(-0.025,0.025))+
+  scale_color_jco(guide = guide_legend(override.aes = list(size = 4)))+
+  facet_wrap(.~proportion_leachable)+
+  xlab("Mass proportion at terminal measurement")+
+  ylab(expression("t"[0.5-trunc] - "t"[0.5-simulated] ~(days)))+
+  theme_bw()+
+  theme(axis.title = element_text(face = "bold", size = 18), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 26, face = "bold"), legend.text = element_text(size = 25), strip.text = element_text(size = 18))
+hldiff.p
+
+ggplot(hl_diffs,aes(x = half.life_diff))+
+  geom_histogram()
+
+```
+
+```{r diff cowplots}
+
+logdiff_grid <- ggdraw(plot_grid(plot_grid(klogdiff.p+theme(legend.position = "none"),
+            klogdiff_nl.p+theme(legend.position = "none"), 
+            ncol = 1),
+          plot_grid(get_legend(klogdiff.p),ncol = 1),
+          rel_widths = c(1,0.2)))
+
+ggsave(logdiff_grid, filename = "k_logdiff_sims.jpeg", path = here("analysis/paper/figures"),
+       height = 9, width = 12, units = "in")
+
+diff_grid <- ggdraw(plot_grid(plot_grid(kdiff.p+theme(legend.position = "none"),
+            hldiff.p+theme(legend.position = "none"), 
+            ncol = 1),
+          plot_grid(get_legend(kdiff.p),ncol = 1),
+          rel_widths = c(1,0.2)))
+
+ggsave(diff_grid, filename = "Fig4_diff_sims.jpeg", path = here("analysis/paper/figures"),
+       height = 9, width = 12, units = "in")
+
+```
+
+
+
+  proportion_leachable = c(0.05,0.15,0.25),
+  k_1 = c(0.4, 0.8, 1.2),
+  B_max = c(0.2,1.2, by = 0.2),
+  b = seq(0.2,1, by = 0.2),
+  c = seq(-1,2, by = 0.4))
+
+```{r filter down to scenarios}
+blah <- tidy_outputs2|>
+  mutate(leaching_scenario = case_when(proportion_leachable == 0.25 ~ "high",
+                                       proportion_leachable == 0.15 ~ "med",
+                                       proportion_leachable == 0.05 ~ "low",
+                                       .default = NA_character_),
+         decomp_scenario = case_when(b == 0.2 & B_max == 0.2 ~ "low", 
+                                     b == 0.6 & B_max == 0.2 ~ "med",
+                                     b == 1 ~ "high",
+                                     .default = NA_character_))
+
+ggplot(blah|>filter(!is.na(leaching_scenario)&!is.na(decomp_scenario))|>
+         filter(k_diff_ln <2))+
+  geom_point(aes(x = leaching_scenario, y = k_diff_ln, color = decomp_scenario))
+```

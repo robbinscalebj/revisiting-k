@@ -1,0 +1,93 @@
+---
+title: "Tidy Detrital Nutrients"
+output: html_document
+date: "2024-07-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(EDIutils)
+library(here)
+```
+
+# Direct download of data
+
+Dataset citations:
+Data paper: Robbins, Caleb J., Beth C. Norman, Halvor M. Halvorson, David W. P. Manning, Elliot Bastias, Cristiane Biasi, Allyn K. Dodd, et al. 2023. “Nutrient and Stoichiometric Time Series Measurements of Decomposing Coarse Detritus in Freshwaters.” Ecology 104(8): e4114. https://doi.org/10.1002/ ecy.4114
+
+Environmental Data Initiative repository: Robbins, C.J., B.C. Norman, H.M. Halvorson, D.W. Manning, E. Bastias, C. Biasi, A.K. Dodd, R.A. Eckert, A. Gossiaux, J. Jabiol, A.S. Mehring, and A. Pastor. 2023. Nutrient and stoichiometric time series measurements of decomposing coarse detritus in freshwaters worldwide from literature published between 1976-2020. ver 2. Environmental Data Initiative. https://doi.org/10.6073/pasta/c3360ed960d93e115a7b980c938ad31a
+
+```{r Load Data}
+packageId <- "edi.1205.2"
+entity_names <- read_data_entity_names(packageId = packageId) # only one here, so a little overkill, but this accesses the data entities in the package
+
+entityId <- entity_names$entityId
+edi_df <- read_data_entity(packageId = packageId, entityId = entityId)|>read_csv()
+
+#write data to file
+edi_df|>write_csv(here("analysis/data/raw_data/DetNutSynth_Database_9May2023.1.csv")) # this matches the name if you were to point-and-click download from EDI
+```
+
+```{r Tidy data}
+
+# Filter down - 
+det_df <- edi_df|>
+  filter(Detritus_Type == "leaves")|>
+  filter(System %in% c("stream","river"))|>
+  filter(Setting %in% c("field", "mesocosm"))|>
+  filter(First_Author != "Meyer")|># these data are not correctly entered and possibly should not have ever been included in the original data collection
+# The Meyer data are all one paper
+  group_by(First_Author, Publication_Title, Time_Series_ID)|>
+  mutate(cohort_id = cur_group_id(), .before = 2)|>
+  mutate(Mass_prop = Mass_per_remaining/100)|>
+  filter(Mass_per_remaining >3)|>
+  filter(!is.na(Mass_per_remaining))|>
+  filter(length(Mass_per_remaining) >3)|>ungroup()|> # kind of arbitrary but need time series longer than number of parameters in some of the models
+  mutate(log_mass_rem = log(Mass_per_remaining))
+
+
+```
+
+
+# Data checks
+
+Although protocols for the Detrital Nutrients database construction should have precluded using k values (i.e., slopes from a negative exponential fit) to calculate mass values at different time points (e.g., when other data were available at specific timepoints), we should check for suspiciously strong fits to a negative exponential model that could indicate such a problem. These will be used as screeners to verify BY HAND the actual mass loss data are available in the publication. We do not want to exclude data for a model comparison based on how well it fits a particular model!
+
+```{r Check data}
+
+det_lm <- det_df|>
+  nest_by(cohort_id, First_Author, Publication_Title)|>
+  mutate(lm_fit = list(lm(log(Mass_prop)~Meas_Day+0, data = data)))|>
+  summarize(glance(lm_fit))|>
+  filter(r.squared >=0.95) 
+
+det_lm|>write_csv(here("analysis/data/derived_data/check_massloss.csv")) # write to file for verification
+
+# read in file with new column  "Actual Mass Loss data in paper?" filled in 
+
+ml_checks <- read_csv(here("analysis/data/derived_data/check_massloss_annotated.csv"))
+
+
+```
+
+There were only a couple instances where the actual mass loss data weren't raw. Now let's filter those out
+```{r}
+det_df2 <- det_df|>left_join(
+  ml_checks|>
+    rename(ml_data_in_paper = "Actual Mass Loss data in paper?")|> #What a terrible column name... guess it's clear, though
+    select(First_Author,Publication_Title, ml_data_in_paper)|>
+    filter(ml_data_in_paper == "no")|>
+    group_by(First_Author, Publication_Title)|>slice_head(n = 1)
+)|>
+  filter(is.na(ml_data_in_paper))|>
+  select(-ml_data_in_paper)
+
+```
+
+# Write to derived_data folder
+```{r}
+
+det_df2|>write_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))
+```

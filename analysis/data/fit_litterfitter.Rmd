@@ -1,0 +1,137 @@
+---
+title: "Fit Series with Litterfitter"
+output: html_document
+date: "2024-07-08"
+---
+
+This markdown fits various analytical decomposition models to time series of leaf litter mass using the package litterfitter (https://github.com/traitecoevo/litterfitter). The initial ranges of model parameters given in litterfitter are appropriate assuming the time variable is measured in years and decomposition progresses relatively slowly compared to the rates typical of aquatic decomposition. However, they've been hand-tuned to encapsulate the ranges necessary to fit the litter data here: I expanded sets of model parameters so that fitted parameters were not clumped on the minimum or maximum for each parameter.
+
+Cornwell, W. K., & Weedon, J. T. (2014). Decomposition trajectories of diverse litter types: a model selection analysis. Methods in Ecology and Evolution 5(2):173-182.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(litterfitter)
+library(foreach); library(doSNOW); library(parallel)
+library(here)
+```
+
+# Data ingest
+
+Data series were checked and  tidied in "tidy_detrital_nutrients_data.Rmd"
+```{r}
+
+litter_df <- read_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))
+```
+
+# Fit litter series
+
+```{r}
+
+if(file.exists(here("analysis/data/derived_data/DetNut_litter_fits.rds"))){
+  
+  litter_fits <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))
+
+}else{
+
+#set up data
+nested_data <- litter_df|>
+    select(cohort_id, Meas_Day, Mass_prop)|>
+    #filter(cohort_id %in% seq(1:38))|> #for testing
+    group_by(cohort_id)|> # needs group_by()|>nest() structure... nest_by() doesn't work!
+    nest()|>
+  ungroup()|>
+  mutate(batch_number = row_number())
+
+# Definitions for use in parallel loops
+n_data_batches <- nrow(nested_data)
+cohort_names <- nested_data|>pull(cohort_id)
+n_iters <- 9999
+
+pb <- txtProgressBar(max = n_data_batches, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+# Set parallel processing
+cl <- makePSOCKcluster(16) 
+registerDoSNOW(cl)
+
+
+# Loop
+litter_fits <- foreach(i = 1:nrow(nested_data), .combine = 'rbind', .options.snow = opts, 
+        .packages = c("tidyverse", "litterfitter", "future"), .inorder = TRUE#, .final = function(x) setNames(x, cohort_names)
+        ) %dopar% {
+          
+          # filter to cohort data and unnest into normal data frame
+      df <- nested_data|>filter(batch_number == i)|>unnest()
+        
+       cohort_id <- df|>first()|>pull(cohort_id)
+          #negative exponential fit
+          negexp_fit <- fit_litter(time = df$Meas_Day,  
+                                              mass.remaining = df$Mass_prop,
+                                              upper = c(2), 
+                                              lower = c(1e-08),
+                                              model = "neg.exp",
+                                              iters = n_iters/10) # need far fewer iterations for only one parameter
+          
+          #weibull fit
+          weibull_fit <- fit_litter(time = df$Meas_Day, 
+                                              mass.remaining = df$Mass_prop,
+                                              lower = c(0.1,0.001),#beta, then alpha 
+                                              upper = c(25000,100),#beta, then alpha 
+                                              model = "weibull",
+                                              iters = n_iters)
+        
+          #discrete parallel fit
+          discpar_fit <- fit_litter(time = df$Meas_Day, 
+                                              mass.remaining = df$Mass_prop,
+                                              upper = c(1, 50, 50), #A, K1, K2 
+                                              lower = c(0, 1e-12, 1e-17), #A, K1, K2
+                                              model = "discrete.parallel",
+                                              iters = n_iters)
+        
+          #discrete series fit
+           discser_fit <- fit_litter(time = df$Meas_Day, 
+                                              mass.remaining = df$Mass_prop,
+                                              upper = c(1, 50, 2), #R, K1, K2
+                                              lower = c(0, 1e-04, 1e-20), #R, K1, K2
+                                              model = "discrete.series",
+                                              iters = n_iters)
+           
+           # continuous quality/continuous exponential fit
+            contqual_fit = fit_litter(time = df$Meas_Day, 
+                                              mass.remaining = df$Mass_prop,
+                                              upper = c(10^6, 50), #b,a
+                                              lower = c(1e-04, 0.01), #b,a
+                                              model = "cont.quality",
+                                              iters = n_iters)
+            
+            # Not actually sure what the name of this is, but appears to estimate a lower mass limit at which decomposition ceases
+            negexplim_fit = fit_litter(time = df$Meas_Day, 
+                                              mass.remaining = df$Mass_prop,
+                                              upper = c(10, 50, 1),
+                                              lower = c(1e-06, 1e-02, 1e-20),
+                                              model = "neg.exp.limit",
+                                              iters = n_iters)
+          
+            # Package up results for export
+            tibble(cohort_id = cohort_id,
+                   negexp_fit = list(negexp_fit), 
+                    weibull_fit = list(weibull_fit),
+                    discpar_fit = list(discpar_fit),
+                    discser_fit = list(discser_fit),
+                    contqual_fit = list(contqual_fit),
+                    negexplim_fit = list(negexplim_fit))
+            
+   
+        }     
+stopCluster(cl)
+
+# save to file
+saveRDS(litter_fits, file = here("analysis/data/derived_data/DetNut_litter_fits.rds")) 
+
+# Loops took about 50 minutes with 16 cores
+}
+```
+

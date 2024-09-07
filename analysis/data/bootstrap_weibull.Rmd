@@ -1,0 +1,86 @@
+---
+title: "Bootstrap Weibull Alpha"
+output: html_document
+date: "2024-08-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(litterfitter)
+library(foreach); library(doSNOW); library(parallel)
+
+litter_df <- read_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))|> # tidied litter time series
+ mutate(mass_prop = Mass_per_remaining/100)
+
+litter_fits <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds"))
+```
+
+
+```{r bootstrap alpha}
+
+
+
+#set up data
+nested_data <- litter_fits|>
+    select(cohort_id, weibull_fit)|>
+    #filter(cohort_id %in% seq(1:38))|> #for testing
+    group_by(cohort_id)|> # needs group_by()|>nest() structure... nest_by() doesn't work!
+    nest()|>
+  ungroup()|>
+  mutate(batch_number = row_number())
+
+# Definitions for use in parallel loops
+n_data_batches <- nrow(nested_data)
+cohort_names <- nested_data|>pull(cohort_id)
+n_iters <- 999
+
+pb <- txtProgressBar(max = n_data_batches, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+# Set parallel processing
+cl <- makePSOCKcluster(16) 
+registerDoSNOW(cl)
+
+# Loop
+weibull_alpha_bs <- foreach(i = 1:nrow(nested_data), .combine = 'rbind', .options.snow = opts, 
+        .packages = c("tidyverse", "litterfitter"), .inorder = TRUE#, .final = function(x) setNames(x, cohort_names)
+        ) %dopar% {
+          
+          # filter to cohort data and unnest into normal data frame
+      df <- nested_data|>filter(batch_number == i)|>unnest()
+  
+       cohort_id <- df|>first()|>pull(cohort_id)
+       weibull_fit <- df|>pluck("weibull_fit",1)
+       
+
+          
+            weibull_bs <- litterfitter::bootstrap_parameters(x = weibull_fit, nboot = n_iters, lower = c(0.1,0.001), 
+                                               upper = c(25000,100)) #beta, then alpha - same bounds used for main litter fitting exercise
+            
+           alpha <- weibull_bs[, 2] # [[,1] is beta, [,3] is the steady state
+  
+          qfs <- quantile(alpha, probs = c(0.025, 0.975))
+       
+          
+       tibble(cohort_id = cohort_id,
+              weibull_alpha_025 = qfs[1],
+              weibull_alpha_975 =  qfs[2])
+      
+    
+            
+   
+        }     
+stopCluster(cl)
+
+weibull_alpha_bs2 <- weibull_alpha_bs|>
+  rowwise()|>
+  mutate(weibulla_overlap_1 = between(1, weibull_alpha_025,weibull_alpha_975))
+
+# save to file
+weibull_alpha_bs2|>write_csv(file = here("analysis/data/derived_data/DetNut_weibullalpha_bootstraps.csv")) 
+
+```
+

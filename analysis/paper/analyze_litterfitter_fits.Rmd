@@ -1,0 +1,1142 @@
+---
+title: "Analyze Litterfitter Fits"
+output: html_document
+date: "2024-07-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(brms)
+library(marginaleffects)
+library(ggsci) 
+library(cowplot)
+
+#also requires arm package, but am not attaching that because it loads MASS which masks dplyr::select()
+```
+
+# Data ingest and tidying
+
+Data Provenance:
+-litter_df tidied in tidy_detrital_nutrients_data.Rmd
+-litter_fits from fit_litterfitter.Rmd
+
+```{r read data files}
+litter_df <- read_csv(here("analysis/data/derived_data/tidied_detrital_nutrients_data.csv"))|> # tidied litter time series
+ mutate(mass_prop = Mass_per_remaining/100)
+
+litter_fits <- readRDS(here("analysis/data/derived_data/DetNut_litter_fits.rds")) # model fits of time series from litterfitter
+weibull_sigs <- read_csv(here("analysis/data/derived_data/DetNut_weibullalpha_bootstraps.csv"))
+
+source(here("analysis/paper/litterfitter_prediction_functions.R"))
+# pull in some modified litterfitter prediction functions to create some predictions on continuous data
+```
+
+```{r extract fits}
+
+
+tidy_fits <- 
+  litter_fits|>
+  mutate(negexp_converge_code = map_dbl(negexp_fit, ~pluck(., "optimFit", "convergence")),
+         negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
+         negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
+         negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_converge_code = map_dbl(weibull_fit, ~pluck(., "optimFit", "convergence")),
+         weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
+         weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
+         weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discpar_converge_code = map_dbl(discpar_fit, ~pluck(., "optimFit", "convergence")),
+         discpar_a = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 1)),
+         discpar_k1 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 2)),
+         discpar_k2 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 3)),
+         discpar_AICc = map_dbl(discpar_fit, ~pluck(., "fitAICc")),
+         discpar_logLik = map_dbl(discpar_fit, ~pluck(., "logLik")),
+         discpar_BIC = map_dbl(discpar_fit, ~pluck(., "fitBIC")),
+         discpar_pred = map(discpar_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discser_converge_code = map_dbl(discser_fit, ~pluck(., "optimFit", "convergence")),
+         discser_r = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 1)),
+         discser_k1 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 2)),
+         discser_k2 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 3)),
+         discser_AICc = map_dbl(discser_fit, ~pluck(., "fitAICc")),
+         discser_logLik = map_dbl(discser_fit, ~pluck(., "logLik")),
+         discser_BIC = map_dbl(discser_fit, ~pluck(., "fitBIC")),
+         discser_pred = map(discser_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(contqual_converge_code = map_dbl(contqual_fit, ~pluck(., "optimFit", "convergence")),
+         contqual_b = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 1)),
+         contqual_a = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 2)),
+         contqual_AICc = map_dbl(contqual_fit, ~pluck(., "fitAICc")),
+         contqual_logLik = map_dbl(contqual_fit, ~pluck(., "logLik")),
+         contqual_BIC = map_dbl(contqual_fit, ~pluck(., "fitBIC")),
+         contqual_pred = map(contqual_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(negexplim_converge_code = map_dbl(negexplim_fit, ~pluck(., "optimFit", "convergence")),
+         negexplim_k = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 1)),
+         negexplim_a = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 2)),
+         negexplim_b = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 3)),
+         negexplim_AICc = map_dbl(negexplim_fit, ~pluck(., "fitAICc")),
+         negexplim_logLik = map_dbl(negexplim_fit, ~pluck(., "logLik")),
+         negexplim_BIC = map_dbl(negexplim_fit, ~pluck(., "fitBIC")),
+         negexplim_pred = map(negexplim_fit, ~pluck(., "predicted"))
+  )|>
+  select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit))|>
+  mutate(series_length = map_dbl(negexp_pred, ~length(.)))|> # get length of time series (same across all fits so just picking one set of predictions produced by a fit)
+  relocate(series_length)|>left_join(
+    litter_df|>select(cohort_id, Meas_Day, Mesh_Size_Category, Mass_per_remaining)|>
+      mutate(mass_prop = Mass_per_remaining/100,
+             mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+      group_by(cohort_id)|>
+      mutate(terminal_mass_prop = last(mass_prop))|>
+      summarize(across(everything(), list))
+  )|>
+  left_join(weibull_sigs)|>
+  mutate(terminal_mass_prop = map_dbl(terminal_mass_prop, ~pluck(., 1)),
+         mesh_cat = map_chr(mesh_cat, ~pluck(., 1)))
+
+```
+ 
+
+
+
+Tidy up the fits for downstream analysis, add covariates from original data
+```{r tidy goodness of fit metrics}
+
+mod_gof <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, series_length, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id, series_length), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar","weibull"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))|>
+    mutate(model_type = ifelse(model != "negexp", "non-constant", "negexp"))|>
+  # join original dataframe with info on each time series
+ left_join(litter_df|>select(Mesh_Size_Category, Velocity_m.s, Water_NO3_ug.L, Water_SRP_ug.L, N_per, P_per, CN_ratio,CP_ratio,NP_ratio, Lignin_per, Temperature_C, Remain_Mass_Category,Initial_Mass_g,mass_prop, Publication_Title, cohort_id)|>
+  mutate(mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+    group_by(cohort_id)|>
+    mutate(Water_NO3_ug.L = mean(Water_NO3_ug.L, na.rm = TRUE),
+           Water_SRP_ug.L = mean(Water_SRP_ug.L, na.rm = TRUE),
+           Temperature_C = mean(Temperature_C, na.rm = TRUE),
+           Velocity_m.s = mean(Velocity_m.s, na.rm = TRUE),
+           initial_N = first(N_per),
+           initial_P = first(P_per),
+           initial_CN = first(CN_ratio),
+           initial_CP = first(CP_ratio),
+           initial_NP = first(NP_ratio),
+           initial_lignin = first(Lignin_per),
+           Publication_Title = first(Publication_Title),
+           Remain_Mass_Category = first(Remain_Mass_Category),
+           Initial_Mass_g = first(Initial_Mass_g),
+           terminal_mass_prop = last(mass_prop))|>
+    slice_head(n = 1)) # take first row of each - covars  all  same number within a cohort
+
+```
+Tidy a dataframe with the weibull alpha parameter selected
+```{r tidy weibull alpha data}
+
+alpha_df <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, series_length, weibull_alpha)|>
+  mutate(weibull_deviation = abs(weibull_alpha-1))|>
+  # join original dataframe with info on each time series
+  left_join(litter_df|>select(Mesh_Size_Category, Velocity_m.s, Water_NO3_ug.L, Water_SRP_ug.L, N_per, P_per, CN_ratio,CP_ratio,NP_ratio, Lignin_per, Temperature_C, Remain_Mass_Category, Initial_Mass_g, Publication_Title, cohort_id, mass_prop)|>
+  mutate(mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+    group_by(cohort_id)|>
+    mutate(Water_NO3_ug.L = mean(Water_NO3_ug.L, na.rm = TRUE),
+           Water_SRP_ug.L = mean(Water_SRP_ug.L, na.rm = TRUE),
+           Temperature_C = mean(Temperature_C, na.rm = TRUE),
+           Velocity_m.s = mean(Velocity_m.s, na.rm = TRUE),
+           initial_N = first(N_per),
+           initial_P = first(P_per),
+           initial_CN = first(CN_ratio),
+           initial_CP = first(CP_ratio),
+           initial_NP = first(NP_ratio),
+           initial_lignin = first(Lignin_per),
+           Publication_Title = first(Publication_Title),
+           Remain_Mass_Category = first(Remain_Mass_Category),
+           Initial_Mass_g = first(Initial_Mass_g),
+           terminal_mass_prop = last(mass_prop))|>
+    slice_head(n = 1) # take first row of each - covars  all  same number within a cohort
+)|>
+  filter(weibull_alpha < 20)
+```
+Tidy a dataframe where predictions for each model and observations for are easy to access
+```{r tidy predictions}
+fit_preds <- tidy_fits|>
+  select(-contains("negexplim"))|>
+  select(series_length,Meas_Day, mass_prop, Mass_per_remaining, cohort_id, ends_with("pred"))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(Meas_Day, mass_prop, Mass_per_remaining, negexp_pred, weibull_pred, discser_pred, discpar_pred, contqual_pred))|>
+  ungroup()|>
+  mutate(across(contains("pred"), ~.-mass_prop, .names = "{.col}_error"))
+
+newpreds_df <- tidy_fits|>
+  rowwise()|>
+  mutate(negexp_newpreds = list(predict_negexp(time = newtimes, k = negexp_k)),
+         discser_newpreds = list(predict_discser(time = newtimes, r = discser_r, k1 = discser_k1, k2 = discser_k2)),
+         discpar_newpreds = list(predict_discpar(time = newtimes, a = discpar_a, k1 = discpar_k1, k2 = discpar_k2)),
+         contqual_newpreds = list(predict_contqual(time = newtimes, a = contqual_a, b = contqual_b)),
+         weibull_newpreds = list(predict_weibull(time = newtimes, beta = weibull_beta, alpha = weibull_alpha)),
+         )|>
+  select(cohort_id, ends_with("newpreds"))|>
+  mutate(Meas_Day = list(newtimes))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(Meas_Day, ends_with("newpreds")))|>
+  pivot_longer(cols = ends_with("newpreds"), values_to = ".pred", names_to = "model")|>
+  mutate(model = str_remove(model, "_newpreds"))
+
+weibull_preds_df<-litter_df|>
+  select(cohort_id, Meas_Day, Mass_prop)|>
+  group_by(cohort_id)|>
+  complete(Meas_Day = full_seq(Meas_Day, 1))|>
+  left_join(newpreds_df|>filter(model == "weibull"))|>left_join(tidy_fits|>select(weibull_alpha,cohort_id))
+
+##delete me
+blah <- tidy_fits|>filter(terminal_mass_prop < 0.2)|>
+  select(cohort_id, weibull_alpha, Mass_per_remaining, series_length)
+
+```
+
+
+# Some basic description of the dataset
+```{r}
+
+n_series <- length(unique(litter_df$cohort_id))
+  
+series_lengths <- litter_df|>
+  group_by(cohort_id)|>
+  count()
+median(series_lengths$n)
+series_lengths|>
+  mutate(size = ifelse(n %in% c(4,5), "short", "long"))|>
+  group_by(size)|>
+  count()
+
+ggplot(series_lengths, aes(x = n))+
+  geom_histogram()
+
+terminals<-litter_df|>group_by(cohort_id)|>arrange(desc(Mass_prop))|>slice_tail(n = 1)
+
+ggplot(terminals, aes(x = Mass_prop))+geom_histogram()+xlab("Terminal mass remaining")
+ggplot(terminals, aes(x = Meas_Day))+geom_histogram()+xlab("Terminal Measurement Day")
+
+quantile(terminals$Mass_prop, probs = c(0.05,0.1,0.25,0.5,0.75,0.78,0.9,0.95))
+quantile(terminals$Meas_Day, probs = c(0,0.05,0.1,0.25,0.5,0.75,0.9,0.95,1))
+
+
+quantile(tidy_fits$negexp_k, probs = c(0,0.05,0.1,0.25,0.5,0.75,0.9,0.95,1))
+
+quantile(tidy_fits$weibull_alpha, probs = c(0,0.05,0.1,0.25,0.5,0.75,0.9,0.95,1))
+```
+
+```{r}
+tidy_fits|>count(weibulla_overlap_1)
+
+ggplot(tidy_fits, aes(x = series_length, y = weibulla_overlap_1))+
+         geom_jitter(width = 0.2)
+
+```
+# Plot Example Time Series and Fits
+
+
+```{r k good fit}
+
+obs_75 <- litter_df|>
+  filter(cohort_id == 75)
+preds_75 <- newpreds_df|>
+  filter(model %in% c("negexp", "weibull", "discpar"))|>
+  filter(cohort_id == 75)|>mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", `Discrete Series` = "discser"))
+
+constant.p <- ggplot()+
+  geom_line(data = preds_75, aes(x = Meas_Day, y = .pred, color = model, linetype = model), linewidth = 1.5)+
+  geom_point(data = obs_75, aes(x = Meas_Day, y = mass_prop), 
+             size = 4, fill = "grey", color = "black", shape = 21)+
+  scale_y_continuous(breaks = c(0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0, max(obs_75$Meas_Day)), breaks = c(0,50,100,150,200,max(obs_75$Meas_Day)))+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+  scale_color_jco()+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()
+constant.p
+```
+
+```{r leading decomp}
+
+
+obs_289 <- litter_df|>
+  filter(cohort_id == 289)
+preds_289 <- newpreds_df|>
+  filter(model %in% c("negexp", "weibull", "discpar"))|>
+  filter(cohort_id == 289)|>mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", `Discrete Series` = "discser"))
+
+leading.p <- ggplot()+
+  geom_line(data = preds_289, aes(x = Meas_Day, y = .pred, color = model, linetype = model), linewidth = 1.5)+
+  geom_point(data = obs_289, aes(x = Meas_Day, y = mass_prop), 
+             size = 4, fill = "grey", color = "black", shape = 21)+
+  scale_y_continuous(breaks = c(0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0, max(obs_289$Meas_Day)), breaks = c(0,50,90,130, max(obs_289$Meas_Day)))+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+  scale_color_jco()+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()
+leading.p
+```
+
+```{r lagged decomp}
+#was 350
+obs_120 <- litter_df|>
+  filter(cohort_id == 120)|>
+  add_row(Meas_Day =0, mass_prop = 1,.before = 1)
+preds_120 <- newpreds_df|>
+  filter(model %in% c("negexp", "weibull", "discpar"))|>
+  filter(cohort_id == 120)|>mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", `Discrete Series` = "discser"))
+
+lagged.p <- ggplot()+
+  geom_line(data = preds_120, aes(x = Meas_Day, y = .pred, color = model, linetype = model), linewidth = 1.5)+
+  geom_point(data = obs_120, aes(x = Meas_Day, y = mass_prop), 
+             size = 4, fill = "grey", color = "black", shape = 21)+
+  scale_y_continuous(limits = c(0, max(obs_120$mass_prop)+0.1), breaks = c(0,0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0, max(obs_120$Meas_Day)), breaks = c(0,15,30,45,60,80,max(obs_120$Meas_Day)))+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+  scale_color_jco()+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()+
+  theme(legend.position = c(0.25,0.25), legend.title = element_blank(), legend.text = element_text(size = 18))
+lagged.p
+
+```
+
+```{r all weibull fits spaghetti plot}
+
+
+preds_all_weibull <- litter_df|>select(cohort_id,Meas_Day)|>
+  left_join(newpreds_df|>filter(model == "weibull"))|>
+  left_join(tidy_fits|>select(cohort_id, weibull_alpha))
+  
+
+weibulls.p <- ggplot(data = weibull_preds_df|>select(-model)|>filter(weibull_alpha < 30))+
+  geom_line(aes(x = Meas_Day, y = .pred, group = cohort_id, color = weibull_alpha), alpha = 0.5)+
+  scale_y_continuous(limits = c(0, 1), breaks = c(0,0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0,max(preds_all_weibull$Meas_Day)), breaks = c(0,50,100,150,200, max(preds_all_weibull$Meas_Day)))+
+  #scale_color_jco()+
+  scale_color_gradient2(trans = "log", low = "red", mid = "grey", high = "black", breaks = c(0.1,0.3,1,3))+
+  #scale_color_gradient2()+
+  guides(color = guide_colorbar(title = expression(Weibull~alpha)))+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()+
+  theme(panel.background = element_rect(fill = "#F7F9F9"),
+        legend.title = element_text(size = 20), legend.text = element_text(size = 16), 
+        legend.position = c(0.9,0.78), legend.background = element_blank())
+weibulls.p
+```
+
+```{r join plots}
+
+
+examples_theme <- theme(axis.title = element_blank(), axis.text = element_text(size = 16, face = "bold"))
+
+examples.p <-  cowplot::plot_grid(
+    lagged.p+examples_theme, 
+    constant.p+guides(color = "none", linetype = "none")+examples_theme, 
+    leading.p+guides(color = "none", linetype = "none")+examples_theme,
+    weibulls.p+examples_theme,
+  nrow = 2
+  )+ theme(plot.margin = margin(0, 0, -300, 50))
+
+examples.p1 <- cowplot::add_sub(examples.p, "Proportional Mass Remaining", x = -0.035, y=1.85,  angle = 90, size = 24, fontface = "bold")
+examples.p2 <- cowplot::ggdraw(examples.p1) + cowplot::draw_text("Day",  x = 0.55,y = 0.06, angle = 0, size = 24, fontface = "bold")
+
+# Weird way to do this but it worked I guess...
+
+
+ggsave(examples.p2, filename = "Fig1_example_plots.jpeg", path = here("analysis/paper/figures"),
+       height = 9, width = 14, units = "in")
+```
+
+# Model comparisons
+
+```{r simple best model counts}
+
+fit_comparisons <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+fit_comparisons_type <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model_type)|>
+  count()|>
+  ungroup()
+
+
+fit_comparisons2 <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  mutate(series_length = ifelse(series_length >7, "8+", as.character(series_length)))|>
+  group_by(gof_metric, model, series_length)|>
+  count()|>
+  ungroup()
+    
+```
+
+```{r model comparison chart}
+
+n_time_series <- length(unique(tidy_fits$cohort_id))
+
+fit_counts.p <- fit_comparisons|>
+  filter(gof_metric != "logLik")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,50,100, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts.p
+
+ggsave(fit_counts.p, filename = "modfit_comparisons.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 6, units = "in")
+
+
+
+fit_counts2.p <- fit_comparisons2|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  #scale_y_continuous(breaks = c(0,50,100, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  facet_wrap(.~series_length, scales = "free_y")+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts2.p
+
+ggsave(fit_counts2.p, filename = "Fig_Sx_modfit_comparisons_by_serieslength.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 10, units = "in")
+
+```
+
+log likelihood basically just prefers more parameters but instructive to keep it in. Allowing complexity typically leads to better fits
+
+
+
+```{r prediction error}
+
+
+fit_rmse <- fit_preds|>
+  filter(Meas_Day != 0)|>
+  group_by(cohort_id,series_length)|>
+  summarize(across(ends_with("pred"), ~yardstick::rmse_vec(truth = mass_prop, estimate = .)))|>
+  pivot_longer(cols = contains("pred"), values_to = "rmse", names_to = "model")|>
+  mutate(model = str_remove(model, "_pred"))|>
+  filter(model %in% c("negexp","discpar","weibull"))
+  
+summed_rmse <- fit_rmse|>
+  filter(model == "weibull")
+quantile(summed_rmse$rmse, probs = c(0,0.9,0.75,0.5,0.25,0.1,0))  
+  
+fit_preds|>
+  filter(Meas_Day != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~name)
+
+fit_preds|>
+  mutate(series_length_category = case_when(series_length >8 ~ "9+",
+                                            .default = as.character(series_length)))|>
+  filter(Meas_Day != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value,  color = name))+
+  geom_density()+
+  facet_wrap(.~as_factor(series_length_category))+
+  scale_color_jco()+
+  theme_bw()
+
+
+
+
+rmse_dstr.p <- fit_rmse|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = rmse,  color = model))+
+  geom_density(linewidth = 1)+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+ # facet_wrap(.~as_factor(series_length))+
+  xlab("RMSE (Litter mass proportion)")+
+  ylab("Density")+
+  scale_color_jco()+
+  guides(color = "none", linetype = "none")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+  
+rmse_dstr.p    
+    
+    
+rmse_by_sl.p<-fit_rmse|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  mutate(series_length_category = case_when(series_length >7 ~ "8+",
+                                            .default = as.character(series_length)),
+         series_length_category = as_factor(series_length_category),
+         series_length_category = fct_relevel(series_length_category, "4","5", "6", "7","8+"))|>
+  ggplot(aes(x = rmse,  color = model))+
+  geom_density(linewidth = 1)+
+  xlab("RMSE (Litter mass proportion)")+
+  ylab("Density")+
+  facet_wrap(.~as_factor(series_length_category), nrow = 3)+
+  scale_color_jco()+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_blank(), legend.text = element_text(size = 18), legend.position = c(0.8,0.15),
+        strip.text = element_text(size = 16))
+
+ggsave(rmse_by_sl.p, filename = "rmse_by_serieslength.jpeg", path = here("analysis/paper/figures"),
+       height = 10, width = 10, units = "in")
+
+
+```
+
+
+
+
+## IC sensitivity to observations
+```{r set up covariate influence and view}
+mod_gof_bin <- mod_gof|>
+  filter(model_type == "negexp")|>
+  rename(negexp_best = "best_in_cohort") #rename binary variable
+  
+
+```
+
+
+```{r series length aic models}
+
+
+sl_aic_brm <- brm(negexp_best ~ series_length, family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+               chains = 4 , iter = 4000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/sl_aic_brm"))
+
+sl_aic_brm1 <- brm(negexp_best ~ log(series_length), family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+               chains = 4 , iter = 4000, warmup = 500, 
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/sl_aic_brm1"))
+
+
+
+
+
+sl_aic_brm <- add_criterion(sl_aic_brm, "loo")
+sl_aic_brm1 <- add_criterion(sl_aic_brm1, "loo")
+
+loo_compare(sl_aic_brm,sl_aic_brm1)
+# doesn't favors log transform series length model - check resids
+arm::binnedplot(fitted(sl_aic_brm), 
+           residuals(sl_aic_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(sl_aic_brm1), 
+           residuals(sl_aic_brm1, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+# residuals a little better for log-trans series length model (more points in intervals)
+
+summary(sl_aic_brm)
+sl_aic.p <- marginaleffects::plot_predictions(sl_aic_brm, condition = "series_length")+
+  geom_jitter(data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+              aes(x = series_length, y = negexp_best), alpha = 0.2, width = 0.15, size =2, height = 0.05)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1.0))+
+  xlab("Observations")+
+  ylab("Probability of NegExp lowest AICc")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_blank(), legend.text = element_text(size = 18), legend.position = c(0.8,0.15),
+        strip.text = element_text(size = 16))
+sl_aic.p
+
+sl_aic_summary <- fixef(sl_aic_brm)
+```
+
+```{r series length bic models}
+
+
+sl_bic_brm <- brm(negexp_best ~ series_length, family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+               chains = 4 , iter = 4000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/sl_bic_brm"))
+
+sl_bic_brm1 <- brm(negexp_best ~ log(series_length), family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+               chains = 4 , iter = 4000, warmup = 500, cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/sl_bic_brm1"))
+
+
+
+
+sl_bic_brm <- add_criterion(sl_bic_brm, "loo")
+sl_bic_brm1 <- add_criterion(sl_bic_brm1, "loo")
+
+loo_compare(sl_bic_brm,sl_bic_brm1)
+#no reason to prefer log trans
+arm::binnedplot(fitted(sl_bic_brm), 
+           residuals(sl_bic_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(sl_bic_brm1), 
+           residuals(sl_bic_brm1, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+
+
+summary(sl_bic_brm)
+sl_bic.p <- marginaleffects::plot_predictions(sl_bic_brm, condition = "series_length")+
+  geom_jitter(data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+              aes(x = series_length, y = negexp_best), alpha = 0.2, width = 0.15, height = 0.05)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1.0))+
+  xlab("Observations")+
+  ylab("Probability that NegExp is lowest BIC fit")+
+  theme_classic()
+sl_bic.p
+
+sl_bic_summary <- fixef(sl_bic_brm)
+```
+### Mass remaining at terminal measurement
+```{r terminal mass aic models}
+
+
+termmass_aic_brm <- brm(negexp_best ~ terminal_mass_prop, family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+               chains = 4 , iter = 4000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/termmass_aic_brm"))
+
+
+termmass_aic_brm1 <- brm(negexp_best ~ log(terminal_mass_prop), family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+               chains = 4 , iter = 4000, warmup = 500, 
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/termmass_aic_brm1"))
+
+
+termmass_aic_brm <- add_criterion(termmass_aic_brm, "loo")
+termmass_aic_brm1 <- add_criterion(termmass_aic_brm1, "loo")
+
+loo_compare(termmass_aic_brm,termmass_aic_brm1)
+#no reason to prefer more complex models/log trans
+
+
+arm::binnedplot(fitted(termmass_aic_brm), 
+           residuals(termmass_aic_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(termmass_aic_brm1), 
+           residuals(termmass_aic_brm1, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+
+
+summary(termmass_aic_brm)
+termmass_aic.p <- marginaleffects::plot_predictions(termmass_aic_brm, condition = "terminal_mass_prop")+
+  geom_jitter(data = mod_gof_bin|>filter(gof_metric == "AICc"), 
+                aes(x = terminal_mass_prop, y = negexp_best), size = 2,alpha = 0.2, width = 0, height = 0.02)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1.0))+
+  xlab("Mass proportion at terminal measurement")+
+  ylab("Probability that NegExp is lowest AICc fit")+
+  theme_classic()
+termmass_aic.p
+
+termmass_aic_summary <- fixef(termmass_aic_brm, probs = c(0.025,0.05,0.95,0.975))
+```
+
+```{r terminal mass bic models}
+
+
+termmass_bic_brm <- brm(negexp_best ~ terminal_mass_prop, family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+               chains = 4 , iter = 4000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/termmass_bic_brm"))
+
+termmass_bic_brm1 <- brm(negexp_best ~ log(terminal_mass_prop), family = bernoulli(link = "logit"),
+               data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+               chains = 4 , iter = 4000, warmup = 500, cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/termmass_bic_brm1"))
+
+
+
+termmass_bic_brm <- add_criterion(termmass_bic_brm, "loo")
+termmass_bic_brm1 <- add_criterion(termmass_bic_brm1, "loo")
+
+loo_compare(termmass_bic_brm,termmass_bic_brm1)
+#no reason to prefer more complex models/log trans
+
+arm::binnedplot(fitted(termmass_bic_brm), 
+           residuals(termmass_bic_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(termmass_bic_brm1), 
+           residuals(termmass_bic_brm1, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+
+summary(termmass_bic_brm)
+termmass_bic.p <- marginaleffects::plot_predictions(termmass_bic_brm, condition = "terminal_mass_prop")+
+  geom_jitter(data = mod_gof_bin|>filter(gof_metric == "BIC"), 
+                aes(x = terminal_mass_prop, y = negexp_best), alpha = 0.2, width = 0, height = 0.02)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1.0))+
+  xlab("Mass proportion at terminal measurement")+
+  ylab("Probability that NegExp is lowest BIC fit")+
+  theme_classic()
+termmass_bic.p
+
+termmass_bic_summary <- fixef(termmass_bic_brm)
+```
+
+## Plot Fig2
+```{r join prediction error and model count plots into Fig 2}
+
+
+comp.legend <- get_legend(fit_counts.p+theme(legend.text = element_text(size = 20), legend.title = element_text(size = 22)))
+
+comperrors.p<-cowplot::plot_grid(fit_counts.p+guides(fill = "none"),
+                   rmse_dstr.p+theme(plot.margin = margin(5,15,0,0)),
+                   sl_aic.p,
+                   comp.legend,
+                   nrow = 2)
+
+comperrors.p
+
+ggsave(comperrors.p, filename = "Fig2_modfit_comperrors.jpeg", path = here("analysis/paper/figures"),
+       height = 10, width = 9, units = "in")
+
+```
+
+# Covariate effects on weibull alpha
+```{r distribution of fitted weibulls}
+alpha_distro.p<-ggplot(alpha_df|>filter(weibull_alpha <20))+
+  geom_histogram(aes(x = weibull_alpha), fill = "grey")+
+  geom_vline(aes(xintercept = 1), color = "red", linewidth = 1.5)+
+  xlab(expression("Fitted Weibull"~alpha))+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+alpha_distro.p
+ggsave(alpha_distro.p, filename = "weibull_alpha_histogram.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 6, units = "in")
+```
+
+```{r}
+vars_list <- c("Water_NO3_ug.L","Water_SRP_ug.L", "Temperature_C","Velocity_m.s", "initial_N", "initial_CN", "initial_NP", "initial_CP", "initial_P", "initial_lignin", "mesh_cat", "series_length", "Remain_Mass_Category", "terminal_mass_prop", "Initial_Mass_g")
+
+alpha_for_plotting <- alpha_df|>
+  select(weibull_deviation,weibull_alpha, !!vars_list)|> 
+  mutate(mesh_cat = ifelse(mesh_cat == "fine", 0, 1),
+         Remain_Mass_Category = as.numeric(as_factor(Remain_Mass_Category)))|>
+  #filter(Water_NO3_ug.L < 2000, Water_SRP_ug.L < 100)|>#6 data points removed above 100 for SRP and ~3 data points above 2000 removed for NO3 - results absolutely do not change when included, so just pulling for visualization 
+  pivot_longer(cols = !!vars_list, names_to = "variable")|>
+  filter(variable != "Remain_Mass_Category")#pulling this out because it doesn't seem to have much real effect, or not enough data
+ 
+
+alpha_corrs <- correlation::correlation(data = alpha_df, select = "weibull_alpha", select2 = vars_list, p_adjust = "none")
+alphadev_corrs <- correlation::correlation(data = alpha_df, select = "weibull_deviation", select2 = vars_list, p_adjust = "none")
+
+#write correlation table
+bind_rows(alpha_corrs, alphadev_corrs)|>
+  arrange(Parameter1, Parameter2)|>
+  select(-Method)|>
+  mutate(Parameter1 = ifelse(Parameter1 == "weibull_alpha", "Raw alpha", "alpha Deviation from 1"))|>
+  rename(`Weibull alpha`  = "Parameter1", Covariate = "Parameter2", `Pearson r` = "r", `No. Observations`  = "n_Obs")|>
+  as.data.frame()|> # for some reason didn't like this as a tibble for either View() or writing to file
+  write_csv(here("analysis/paper/weibull_pearson_correlation_summaries.csv"))
+
+
+
+#plot correlations
+alpha_covars.p <- ggplot(alpha_for_plotting, aes(x = value, y = weibull_alpha))+
+  geom_point()+
+  geom_smooth(data = alpha_for_plotting|>filter(variable != "mesh_cat"), aes(x = value, y = weibull_alpha), method = "lm", se = FALSE)+
+  facet_wrap(.~variable, scales = "free")+
+  ylab(expression(Weibull~alpha))+
+  theme_bw()+theme(axis.title.y = element_text(face = "bold", size = 16), axis.title.x = element_blank(),axis.text = element_text(size = 14, color = "black"))
+alpha_covars.p
+
+
+
+ggsave(alpha_covars.p, filename = "FigSx_weibull_alpha_covar-corr.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 10, units = "in")
+
+
+
+
+
+```
+
+
+
+```{r mesh size weibull}
+
+mesh_weibull_brm <- brm(weibull_alpha ~ mesh_cat, family = Gamma(),
+               data = alpha_df, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/mesh_weibull_brm"))
+
+mesh_weibull_brm2 <- brm(bf(weibull_alpha ~ mesh_cat, 
+                           shape ~ 0+mesh_cat, family = Gamma()),
+               data = alpha_df, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/mesh_weibull_brm2"))
+
+mesh_weibull_brm3 <- brm(bf(weibull_alpha ~ mesh_cat, 
+                           shape ~ mesh_cat, family = Gamma()),
+               data = alpha_df, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/mesh_weibull_brm3"))
+
+
+
+#tested with gaussian here and it didn't make any difference
+
+summary(mesh_weibull_brm3)
+
+mesh_weibull.p <- marginaleffects::plot_predictions(mesh_weibull_brm2, condition = "mesh_cat", draw = FALSE)|>
+  mutate(mesh_cat = fct_recode(mesh_cat, Coarse = "coarse", Fine = "fine"))|>
+  ggplot()+
+  geom_point(aes(x = mesh_cat, y = estimate), size = 2)+
+  geom_errorbar(aes(x = mesh_cat, ymin = conf.low, ymax = conf.high), width = 0, linewidth = 1.2)+
+  geom_jitter(data = alpha_df|>filter(!is.na(mesh_cat))|>
+                mutate(mesh_cat = fct_recode(mesh_cat, Coarse = "coarse", Fine = "fine")), 
+              aes(x = mesh_cat, y = weibull_alpha), alpha = 0.2, height = 0.05, width = 0.05)+
+  xlab("Mesh Size")+
+  ylab(expression(Weibull~alpha))+
+  theme_classic()+
+  theme()
+mesh_weibull.p
+
+
+ggsave(mesh_weibull.p, filename = "FigSx_mesh_weibull.jpeg", path = here("analysis/paper/figures"),
+       height = 4, width = 5, units = "in")
+
+```
+
+
+Also looked at remaining mass category and there was not enough data available in the categories to make much of a determination on effect – the category with >95% of observations had a greater spread than any other category, so it looks unlikely that the mean effect is particularly strong. 
+
+```{r series length weibull}
+
+weibullsig_sl_brm <- brm(weibulla_overlap_1 ~ series_length, family = bernoulli(link = "logit"),
+               data = tidy_fits, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/weibullsig_sl_brm"))
+
+weibullsig_sl_brm2 <- brm(weibulla_overlap_1 ~ log(series_length), family = bernoulli(link = "logit"),
+               data = tidy_fits, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/weibullsig_sl_brm2"))
+
+
+weibullsig_sl_brm <- add_criterion(weibullsig_sl_brm, "loo")
+weibullsig_sl_brm2 <- add_criterion(weibullsig_sl_brm2, "loo")
+
+loo_compare(weibullsig_sl_brm,weibullsig_sl_brm2)
+
+arm::binnedplot(fitted(weibullsig_sl_brm), 
+           residuals(weibullsig_sl_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(weibullsig_sl_brm2), 
+           residuals(weibullsig_sl_brm2, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+# no reason to favor log trans
+
+summary(weibullsig_sl_brm)
+sl_weibullsig.p <- marginaleffects::plot_predictions(weibullsig_sl_brm, condition = "series_length")+
+  geom_jitter(data = tidy_fits|>mutate(weibulla_overlap_1 = as.numeric(weibulla_overlap_1)), 
+              aes(x = series_length, y = weibulla_overlap_1), alpha = 0.2, width = 0.15, size =2, height = 0.05)+
+  #scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1.0))+
+  xlab("Observations")+
+  #ylab("Probability that NegExp is lowest AICc fit")+
+  theme_classic()
+sl_weibullsig.p
+
+sl_weibullsig_summary <- fixef(weibullsig_sl_brm)
+```
+
+```{r series length weibull}
+
+weibullsig_termmass_brm <- brm(weibulla_overlap_1 ~ terminal_mass_prop, family = bernoulli(link = "logit"),
+               data = tidy_fits, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/weibullsig_termmass_brm"))
+
+weibullsig_termmass_brm2 <- brm(weibulla_overlap_1 ~ log(terminal_mass_prop), family = bernoulli(link = "logit"),
+               data = tidy_fits, 
+               chains = 4 , iter = 2000, warmup = 500,
+               cores = 4,
+               file = here("analysis/data/derived_data/regression_fits/weibullsig_termmass_brm2"))
+
+
+weibullsig_termmass_brm <- add_criterion(weibullsig_termmass_brm, "loo")
+weibullsig_termmass_brm2 <- add_criterion(weibullsig_termmass_brm2, "loo")
+
+loo_compare(weibullsig_termmass_brm,weibullsig_termmass_brm2)
+
+arm::binnedplot(fitted(weibullsig_termmass_brm), 
+           residuals(weibullsig_termmass_brm, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+arm::binnedplot(fitted(weibullsig_termmass_brm2), 
+           residuals(weibullsig_termmass_brm2, type = "ordinary"), 
+           nclass = NULL, 
+           xlab = "Expected Values",ylab = "Average residual", 
+          cex.pts = 0.8,col.pts = 1,  col.int = "gray")
+
+# no reason to favor log trans
+
+summary(weibullsig_termmass_brm)
+termmass_weibullsig.p <- marginaleffects::plot_predictions(weibullsig_termmass_brm, condition = "terminal_mass_prop")+
+  geom_jitter(data = tidy_fits|>mutate(weibulla_overlap_1 = as.numeric(weibulla_overlap_1)), 
+              aes(x = terminal_mass_prop, y = weibulla_overlap_1), alpha = 0.2, width = 0, size =2, height = 0.05)+
+  scale_x_continuous(trans = "reverse")+
+  xlab("Terminal Mass Proportion")+
+  #ylab("Probability that NegExp is lowest AICc fit")+
+  theme_classic()
+termmass_weibullsig.p
+
+termmass_weibullsig_summary <- fixef(weibullsig_termmass_brm)
+```
+
+```{r breakdown rate regs}
+k_termmass.p <- tidy_fits|>
+  ggplot(aes(x = terminal_mass_prop, y = negexp_k))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  scale_x_continuous(trans = "reverse")+
+  scale_y_continuous(trans = "log", breaks = c(0.005,0.025, 0.15))+
+  ylab(expression(bold(paste("Breakdown rate (", italic(k),")"))))+
+  xlab("Mass remaining at terminal measurement")+
+  theme_classic()+
+  alphas_theme
+
+tidy_fits2 <- tidy_fits|>filter(weibull_alpha <20)|>
+  mutate(termass_scaled = scale(terminal_mass_prop)[,1],
+         weibull_alpha = scale(weibull_alpha)[,1])
+# tested this with Gamma() and shape variance functions - didn't make a difference, but looic slightly favored lognormal
+k_termmass_brm1 <- brm(bf(negexp_k ~ terminal_mass_prop,
+                         sigma ~ 0+terminal_mass_prop),
+                      family=lognormal(),
+                      data = tidy_fits, 
+                      chains = 4, iter = 2000, warmup = 500,
+                      file = here("analysis/data/derived_data/regression_fits/k_termmass_brm"))
+
+k_termmass_brm2 <- brm(bf(negexp_k ~ terminal_mass_prop+weibull_alpha),
+                      family=lognormal(),
+                      data = tidy_fits|>filter(weibull_alpha <20), 
+                      chains = 4, iter = 2000, warmup = 500,
+                      file = here("analysis/data/derived_data/regression_fits/k_termmass_brm2"))
+#interaction term here does nothing
+newdata_k_termmass <- expand_grid(weibull_alpha = c(0.1,0.5,0.75,1.2,3.8),
+                        terminal_mass_prop = seq(min(tidy_fits$terminal_mass_prop), max(tidy_fits$terminal_mass_prop), by =0.01))
+
+summary(k_termmass_brm2)
+
+k_termmass.p<-predictions(k_termmass_brm2,newdata = newdata_k_termmass)|>
+  mutate(weibull_alpha = as_factor(weibull_alpha))|>
+#plot_predictions(k_termmass_brm2, newdata = newdata_k_termmass,condition = c("terminal_mass_prop", "weibull_alpha"), points = 0.5)+
+  ggplot()+
+  geom_ribbon(aes(x = terminal_mass_prop, ymax = conf.high, ymin = conf.low, fill = weibull_alpha), alpha = 0.2)+
+  geom_line(aes(x = terminal_mass_prop, y = estimate,color = weibull_alpha))+
+  geom_point(data = tidy_fits|>filter(weibull_alpha <20), aes(x = terminal_mass_prop, y = negexp_k), 
+             alpha = 0.5, size = 2)+
+  scale_fill_jco()+scale_color_jco()+
+  scale_x_continuous(trans = "reverse")+
+  ylab(expression(bold(paste("Breakdown rate (", italic(k),")"))))+
+  xlab("Mass remaining at terminal measurement")+
+  guides(fill = guide_legend(title = expression(bold(alpha[Weibull]))), color = guide_legend(expression(bold(alpha[Weibull]))))+
+  #scale_y_continuous(trans = "log", breaks = c(0.005,0.025,  0.15))+
+  theme_classic()+
+  alphas_theme
+
+ggsave(k_termmass.p, filename = "FigSx_k_termmass_alpha.jpeg", path = here("analysis/paper/figures"),
+       height = 6, width = 8, units = "in")
+
+ggplot(data = tidy_fits, aes(x = mesh_cat, y = negexp_k))+geom_point()
+
+```
+## Plot Fig 3
+```{r Weibull alpha plots}
+alphas_theme <- theme(
+  axis.title = element_text(face = "bold", size = 22), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12),
+)
+anot_size = 8
+
+
+
+
+temp_results <-alpha_corrs|>filter(Parameter2 == "Temperature_C")|>mutate(across(c(r, CI_low, CI_high), ~round(., digits = 2)))
+temp_string <- list(glue::glue("italic(r) == {temp_results$r[1]}~NULL "),glue::glue("({temp_results$CI_low[1]},{temp_results$CI_high[1]})"))
+                
+
+termmass_results <-alpha_corrs|>filter(Parameter2 == "terminal_mass_prop")|>mutate(across(c(r, CI_low, CI_high), ~round(., digits = 2)))
+termmass_string <- list(glue::glue("italic(r) == {termmass_results$r[1]}~NULL "),glue::glue("({termmass_results$CI_low[1]},{termmass_results$CI_high[1]})"))
+
+
+alpha_temp.p <- alpha_df|>
+  ggplot(aes(x = Temperature_C, y = weibull_alpha))+
+  geom_point(size = 2.5, alpha = 0.6)+
+  geom_smooth(method = "lm", se = FALSE)+
+  scale_y_continuous(limits = c(0,4))+
+   #scale_x_continuous(breaks = c(5,15,25))+
+   scale_x_continuous(limits = c(2,30), breaks = c(2,10,20,30))+
+   xlab(expression(bold(paste("Temperature (", degree, "C)"))))+
+  ylab(expression(bold(alpha[Weibull])))+
+  theme_classic()+
+  alphas_theme+
+  annotate("text", x = max(alpha_df$Temperature_C,na.rm = TRUE)*0.8, y = 3.4, label = paste(temp_string[[1]], temp_string[[2]]), parse = TRUE, size = anot_size)
+
+alpha_term.p <- alpha_df|>
+  ggplot(aes(x = terminal_mass_prop, y = weibull_alpha))+
+  geom_point(size = 2.5, alpha = 0.6)+
+  geom_smooth(method = "lm", se = FALSE)+
+  scale_y_continuous(limits = c(0,4))+
+  scale_x_continuous(trans = "reverse")+
+  xlab("Mass remaining at terminal measurement")+
+  ylab(expression(bold(alpha[Weibull])))+
+  theme_classic()+
+  alphas_theme+
+  annotate("text", x = 0.2, y = 3.4, label = paste(termmass_string[[1]], termmass_string[[2]]), parse = TRUE, size = anot_size)
+
+
+alphas.p<-plot_grid(alpha_temp.p,alpha_term.p, ncol = 1)
+
+ggsave(alphas.p, filename = "Fig3_weibull_alpha_sigcorrs.jpeg", path = here("analysis/paper/figures"),
+       height = 12, width = 8, units = "in")
+
+
+```
+# Instantaneous slopes with Weibull fitted model
+
+```{r}
+#trim each cohort's predictions to the last available date - i.e., don't extrapolate beyond data range
+#only pull slopes from available data points to reflect data availability
+kapp_df <- litter_df|>select(cohort_id, Meas_Day, Mass_prop)|>
+  mutate(observed = "observed")|> # mark where we actually had data
+  group_by(cohort_id)|>
+  complete(Meas_Day = full_seq(Meas_Day, 1))|>
+  left_join(newpreds_df|>filter(model == "weibull"))|>left_join(tidy_fits|>select(weibull_alpha,cohort_id))|>
+  group_by(cohort_id)|>
+  mutate(dt = Meas_Day - lag(Meas_Day),
+         logM = log(.pred),
+         dlogM = logM - lag(logM),
+         k_app = -dlogM/dt,
+         kdd_app = (lead(logM)-2*logM+lag(logM))/(lead(logM)-logM)^2)|>
+  ungroup()|>
+  filter(observed == "observed", Meas_Day != 0)
+
+kapp_df2<-kapp_df|>group_by(cohort_id)|>filter(last(Mass_prop)<0.25, weibull_alpha>1)
+  
+
+ggplot(kapp_df2, aes(x = Meas_Day, y = .pred, group= cohort_id))+
+  geom_line()+scale_y_continuous(trans = "log", limits = c(0.05, 1))
+
+ggplot(kapp_df, aes(x = Mass_prop, y = k_app))+
+  geom_point()+
+  scale_x_continuous(trans = "reverse", limits = c(1,0))+
+  scale_y_continuous(limits = c(-0.001,0.1))+
+  xlab("Mass remaining")+
+  geom_smooth(method = "gam")+
+  theme_bw()
+
+ggplot(kapp_df|>filter(k_app<0.1), aes(x = k_app))+
+  geom_histogram()
+
+ggplot(kapp_df, aes(x = Mass_prop, y = kdd_app))+
+  geom_point()+
+  scale_y_continuous(limits = c(-1,1))+
+  scale_x_continuous(trans = "reverse", limits = c(1,0))+
+  geom_smooth(method = "gam")
+  
+  
+
+```
+
+
+
+```{r}
+m0 <-  mgcv::gam(data = kapp_df, k_app~ s(Mass_prop))
+m0 <-  mgcv::gam(data = kapp_df, k_app~ s(Mass_prop))
+m1 <- mgcv::gamm(data = kapp_df, k_app~ s(Mass_prop)+s(Mass_prop, by = as_factor(cohort_id), bs = "fs", k = 3))
+
+plot_predictions(m0, by = "Mass_prop", points = 0.5)+
+  scale_x_continuous(trans = "reverse", limits = c(1,0))+
+  scale_y_continuous(limits = c(-0.1,0.01))+
+  theme_bw()
+
+```
