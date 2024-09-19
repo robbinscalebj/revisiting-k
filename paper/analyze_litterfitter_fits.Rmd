@@ -97,11 +97,13 @@ tidy_fits <-
                               Mesh_Size_Category < 1 ~ "fine",
                               Mesh_Size_Category >= 1 ~ "coarse"))|>
       group_by(cohort_id)|>
-      mutate(terminal_mass_prop = last(mass_prop))|>
+      mutate(terminal_mass_prop = last(mass_prop),
+             terminal_meas_day = last(Meas_Day))|>
       summarize(across(everything(), list))
   )|>
   left_join(weibull_sigs)|>
   mutate(terminal_mass_prop = map_dbl(terminal_mass_prop, ~pluck(., 1)),
+         terminal_meas_day = map_dbl(terminal_meas_day, ~pluck(., 1)),
          mesh_cat = map_chr(mesh_cat, ~pluck(., 1)))
 
 ```
@@ -971,6 +973,12 @@ termmass_weibullsig_summary <- fixef(weibullsig_termmass_brm)
 ```
 
 ```{r breakdown rate regs}
+alphas_theme <- theme(
+  axis.title = element_text(face = "bold", size = 22), axis.text = element_text(size = 16, color = "black", face = "bold"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12),
+)
+anot_size = 8
+
 k_termmass.p <- tidy_fits|>
   ggplot(aes(x = terminal_mass_prop, y = negexp_k))+
   geom_point()+
@@ -998,16 +1006,44 @@ k_termmass_brm2 <- brm(bf(negexp_k ~ terminal_mass_prop+weibull_alpha),
                       data = tidy_fits|>filter(weibull_alpha <20), 
                       chains = 4, iter = 2000, warmup = 500,
                       file = here("data/derived_data/regression_fits/k_termmass_brm2"))
+
+k_termmass_brm3 <- brm(bf(negexp_k ~ terminal_mass_prop+terminal_meas_day),
+                      family=lognormal(),
+                      data = tidy_fits|>filter(weibull_alpha <20), 
+                      chains = 4, iter = 2000, warmup = 500,
+                      file = here("data/derived_data/regression_fits/k_termmass_brm3"))
+
+k_termmass_brm3.1 <- brm(bf(negexp_k ~ terminal_mass_prop+terminal_meas_day+weibull_alpha),
+                      family=lognormal(),
+                      data = tidy_fits|>filter(weibull_alpha <20), 
+                      chains = 4, iter = 2000, warmup = 500,
+                      file = here("data/derived_data/regression_fits/k_termmass_brm3.1"))
+
+k_termmass_brm3.2 <- brm(bf(negexp_k ~ terminal_mass_prop*terminal_meas_day+weibull_alpha),
+                      family=lognormal(),
+                      data = tidy_fits|>filter(weibull_alpha <20)|>mutate(logterm = log(terminal_mass_prop)), 
+                      chains = 4, iter = 2000, warmup = 500,
+                      file = here("data/derived_data/regression_fits/k_termmass_brm3.2"))
+
+
 #interaction term here does nothing
 newdata_k_termmass <- expand_grid(weibull_alpha = c(0.1,0.5,0.75,1.2,3.8),
                         terminal_mass_prop = seq(min(tidy_fits$terminal_mass_prop), max(tidy_fits$terminal_mass_prop), by =0.01))
+newdata_k_termmass2 <- expand_grid(weibull_alpha = c(0.1,0.5,0.75,1.2,3.8),
+                        terminal_meas_day = seq(min(tidy_fits$terminal_meas_day), max(tidy_fits$terminal_meas_day), by = 5),
+                        terminal_mass_prop = seq(min(tidy_fits$terminal_mass_prop), max(tidy_fits$terminal_mass_prop), by =0.05))
+  
+  mutate(logterminal_mass_prop = log(terminal_mass_prop),
+         `logterminal_mass_prop:terminal_meas_day` = logterminal_mass_prop *terminal_meas_day)
+                        
+k_termmass_preds<-predictions(k_termmass_brm6,newdata = newdata_k_termmass)|>
+  mutate(weibull_alpha = as_factor(weibull_alpha))
 
-summary(k_termmass_brm2)
-
-k_termmass.p<-predictions(k_termmass_brm2,newdata = newdata_k_termmass)|>
-  mutate(weibull_alpha = as_factor(weibull_alpha))|>
+k_termmass_preds2<-avg_predictions(k_termmass_brm3.1, newdata = newdata_k_termmass2, variables = c("weibull_alpha", "terminal_mass_prop"))|>
+  mutate(weibull_alpha = as_factor(weibull_alpha))
 #plot_predictions(k_termmass_brm2, newdata = newdata_k_termmass,condition = c("terminal_mass_prop", "weibull_alpha"), points = 0.5)+
-  ggplot()+
+  k_termmass.p <- k_termmass_preds|>
+    ggplot()+
   geom_ribbon(aes(x = terminal_mass_prop, ymax = conf.high, ymin = conf.low, fill = weibull_alpha), alpha = 0.2)+
   geom_line(aes(x = terminal_mass_prop, y = estimate,color = weibull_alpha))+
   geom_point(data = tidy_fits|>filter(weibull_alpha <20), aes(x = terminal_mass_prop, y = negexp_k), 
@@ -1020,6 +1056,21 @@ k_termmass.p<-predictions(k_termmass_brm2,newdata = newdata_k_termmass)|>
   #scale_y_continuous(trans = "log", breaks = c(0.005,0.025,  0.15))+
   theme_classic()+
   alphas_theme
+  
+  k_termmass.p2 <- k_termmass_preds2|>
+    ggplot()+
+  geom_ribbon(aes(x = terminal_mass_prop, ymax = conf.high, ymin = conf.low, fill = weibull_alpha), alpha = 0.2)+
+  geom_line(aes(x = terminal_mass_prop, y = estimate,color = weibull_alpha))+
+  geom_point(data = tidy_fits|>filter(weibull_alpha <20), aes(x = terminal_mass_prop, y = negexp_k), 
+             alpha = 0.5, size = 2)+
+  scale_fill_jco()+scale_color_jco()+
+    guides(fill = guide_legend(title = expression(bold(alpha[Weibull]))), color = guide_legend(expression(bold(alpha[Weibull]))))+
+  ylab(expression(bold(paste("Breakdown rate (", italic(k),")"))))+
+    #scale_y_continuous(trans = "log")+
+    scale_x_reverse()+
+  #scale_y_continuous(trans = "log", breaks = c(0.005,0.025,  0.15))+
+  theme_classic()+
+  alphas_theme
 
 ggsave(k_termmass.p, filename = "FigSx_k_termmass_alpha.jpeg", path = here("paper/figures"),
        height = 6, width = 8, units = "in")
@@ -1029,11 +1080,7 @@ ggplot(data = tidy_fits, aes(x = mesh_cat, y = negexp_k))+geom_point()
 ```
 ## Plot Fig 3
 ```{r Weibull alpha plots}
-alphas_theme <- theme(
-  axis.title = element_text(face = "bold", size = 22), axis.text = element_text(size = 16, color = "black", face = "bold"),
-        legend.title = element_text(size = 14), legend.text = element_text(size = 12),
-)
-anot_size = 8
+
 
 
 
