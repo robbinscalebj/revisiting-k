@@ -254,6 +254,20 @@ ggplot(tidy_fits, aes(x = series_length, y = weibulla_overlap_1))+
 ```
 # Plot Example Time Series and Fits
 
+```{r summarize the fits that are plotted below}
+example_cohorts <- c(75,289,120)
+
+example_cohorts_df <- tidy_fits|>
+  filter(cohort_id %in% example_cohorts)|>
+  mutate(example_name = case_when(cohort_id == 75 ~ "k_good",
+                                  cohort_id == 289 ~ "leading",
+                                    cohort_id == 120 ~ "lagging"))|>relocate(example_name)
+
+example_cohorts_df|>
+  select(example_name,cohort_id,discpar_a,discpar_k1,discpar_k2,weibull_alpha,weibull_beta,negexp_k)|>
+  left_join(litter_df|>group_by(cohort_id)|>slice_head(n=1)|>select(Detritus_Species, Detritus_Condition, Geog_Locale, Mesh_Size_Category))
+
+```
 
 ```{r k good fit}
 
